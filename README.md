@@ -1,0 +1,364 @@
+# ChatCMD
+
+
+
+<p align="center">
+  <img src="assets/icons/logo-transparent-master-1254.png" alt="ChatCMD logo" title="ChatCMD" width="100">
+</p>
+
+<p align="center">
+  Turn web-based AI into a local worker through the Model Context Protocol.
+</p>
+
+> [!CAUTION]
+> If the pre-built versions from GitHub fail to open, please download the entire project repository and open it using https://www.jetbrains.com/rust/. The issue may stem from the GitHub Actions compiler malfunctioning on certain machines.
+
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2ea44f.svg"></a>
+  <a href="Cargo.toml"><img alt="Rust 1.85 or newer" src="https://img.shields.io/badge/Rust-1.85%2B-dea584.svg"></a>
+  <a href="web/package.json"><img alt="React and Vite" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff.svg"></a>
+  <a href="https://modelcontextprotocol.io/"><img alt="Model Context Protocol" src="https://img.shields.io/badge/Protocol-MCP-5a45ff.svg"></a>
+</p>
+
+ChatCMD is a self-hosted bridge between MCP-compatible AI clients and your computer. It combines a Rust server, a permission-scoped machine runtime, SQLite persistence, a React management console, and an optional Chromium extension for working with ChatGPT in the browser.
+
+The core application runs on your machine. It has no ChatCMD account, subscription, payment, quota, or hosted authentication dependency. Optional features can still make outbound connections—for example to ChatGPT, a Git repository used to install a skill, a Google Font, or a tunnel address that you configure.
+
+## Download the latest release
+
+<p>
+  <a href="https://github.com/int04/ChatCmd/releases/latest/download/ChatCMD-windows-x64.zip"><img alt="Download ChatCMD for Windows 64-bit" src="https://img.shields.io/badge/Download-Windows%2064--bit-0078d4?style=for-the-badge&amp;logo=windows11&amp;logoColor=white"></a>
+  <a href="https://github.com/int04/ChatCmd/releases/latest/download/ChatCMD-windows-x86.zip"><img alt="Download ChatCMD for Windows 32-bit" src="https://img.shields.io/badge/Download-Windows%2032--bit-0078d4?style=for-the-badge&amp;logo=windows11&amp;logoColor=white"></a>
+</p>
+<p>
+  <a href="https://github.com/int04/ChatCmd/releases/latest/download/ChatCMD-macos-apple-silicon.zip"><img alt="Download ChatCMD for macOS Apple Silicon" src="https://img.shields.io/badge/Download-macOS%20Apple%20Silicon-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white"></a>
+  <a href="https://github.com/int04/ChatCmd/releases/latest/download/ChatCMD-macos-intel.zip"><img alt="Download ChatCMD for macOS Intel" src="https://img.shields.io/badge/Download-macOS%20Intel-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white"></a>
+</p>
+
+[View release notes and SHA-256 checksums](https://github.com/int04/ChatCmd/releases/latest).
+
+The automated macOS packages are ad-hoc signed and are not Apple-notarized.
+
+> [!CAUTION]
+> ChatCMD can expose terminals, files, Git repositories, and local processes to an AI client. Start with the smallest tool allowlist, keep approval mode enabled, review every public endpoint, and never publish a tokenized MCP URL.
+
+## Why ChatCMD
+
+- **Local-first runtime:** the server, management UI, task history, settings, and SQLite database stay on your device.
+- **MCP access profiles:** create multiple plugin profiles, grant tools per profile, disable access without deleting the profile, and rotate secret URLs.
+- **Real machine tools:** persistent PTY terminals, bounded file operations, Git commands, process inspection, task artifacts, and skill discovery.
+- **Live supervision:** follow progress, tool calls, file changes, terminals, sub-agents, approvals, and final responses in real time.
+- **ChatGPT web bridge:** optionally send, continue, queue, and stop ChatGPT browser conversations through a Manifest V3 extension.
+- **Cross-platform codebase:** Windows, macOS, and Linux development/runtime support; release packaging scripts are included for Windows and macOS.
+- **No vendor lock-in:** the server uses MCP Streamable HTTP and a documented local API rather than a proprietary hosted control plane.
+
+## Features
+
+### MCP and permissions
+
+- Tokenized Streamable HTTP endpoints in the form `http://127.0.0.1:8080/mcp/<token>`.
+- Separate access profiles for different AI clients or jobs.
+- Per-tool allowlists, grouped permission controls, and a non-destructive preset.
+- Enable, disable, edit, delete, and rotate access profiles.
+- Origin and host validation, one-time local profile secrets hashed at rest, URL-token redaction in built-in HTTP traces, and rejection of query-string credentials.
+- User-managed public domains, reverse proxies, IP addresses, and tunnels with a connectivity test before they are saved.
+
+### Local tool catalog
+
+| Group | Capabilities |
+| --- | --- |
+| Device | List and inspect the local execution device. |
+| Terminal | Create, write, wait, read, signal, resize, list, inspect, and close persistent PTY sessions. |
+| Files and workspace | Discover roots; list, find, search, read, create, replace, write, inspect, copy, move, and delete files or directories. |
+| Git | Status, diff, log, branches, show revisions, and create commits without shell interpolation. |
+| Processes | List, inspect, and terminate local processes or process trees. |
+| Skills | Discover and read project or user skills from `.agents` and `.codex`. |
+| Tasks and orchestration | Track user turns, progress, execution mode, artifacts, plan questions, sub-agents, waits, and completion. |
+
+The authoritative method-by-method reference is in [docs/mcp_method.md](docs/mcp_method.md).
+
+### Sub-Agent orchestration
+
+Sub-Agents let a coordinator split a larger task into smaller delegated jobs that can run independently and, when useful, in parallel. Each Sub-Agent is represented by its own child task, while remaining attached to the parent task and root turn so ChatCMD can supervise the entire delegation tree from one workflow.
+
+How it works:
+
+1. **Delegate a focused job.** The parent creates or reuses a child through `agent_subagent_start`, providing a name, request, and optional constraints such as allowed files, allowed effects, dependencies, acceptance criteria, project context, and a bounded safe-read approval grant.
+2. **Reserve and claim a child task.** ChatCMD creates a deterministic child task and Sub-Agent run, prevents duplicate workers for the same delegation, and enforces the global Sub-Agent concurrency limit configured under **Settings > Execution**.
+3. **Run with the same safety boundaries.** Delegation can only narrow server policy. A child does not receive unrestricted tool access: normal tool authorization and approval rules still apply. An optional `approvalGrant` can inherit only a bounded portion of an already approved parent safe-read grant; Git, process, write, and agent-lifecycle operations continue through their normal approval path.
+4. **Support nested delegation without deadlocking the tree.** A child can create its own Sub-Agent, so parent → child → grandchild workflows are supported. All descendants share the same global concurrency budget; when a nested child cannot acquire a slot, it must continue that delegated work locally instead of waiting indefinitely.
+5. **Supervise lifecycle and failures.** Sub-Agent runs move through pending/running/terminal states, publish live status to the task timeline, refresh leases with heartbeats, and are cleaned up by watchdog logic if a worker restarts, stops heartbeating, or exceeds its runtime deadline. The ChatGPT browser extension can also act as a fallback worker when native delegation is unavailable.
+6. **Return durable results to the coordinator.** `agent_subagent_wait` waits on the whole descendant tree and reads persisted final reports from SQLite, including grandchildren. Reports carry the final content plus normalized work outcome, blockers, limitations, child verification metadata, and evidence references. Lifecycle completion is kept separate from proof that the delegated objective actually succeeded, so the parent remains responsible for integrating and verifying child work before finalizing.
+
+This makes Sub-Agents useful for parallel code inspection, splitting research across components, delegating focused implementation or review work, and building multi-level agent workflows without losing task history, permission boundaries, or final-result traceability. See [docs/subagent-reports.md](docs/subagent-reports.md) and [docs/subagent-approval-grants.md](docs/subagent-approval-grants.md) for the detailed report and permission model.
+
+### Follow-up messages: queue or send immediately
+
+While ChatGPT is still working, ChatCMD lets you prepare the next instruction without waiting for the current response to finish. The task composer exposes two different delivery modes:
+
+- **Queue another message:** adds the message to the task's persistent ChatGPT queue. ChatCMD keeps it waiting until the current conversation is idle, the browser bridge is connected, the exact ChatGPT tab is open, and the UI is ready for another prompt; it then sends the first queued message automatically.
+- **Send immediate message:** marks the message as `immediate`, allowing the AI to receive it on its next MCP call in the same conversation instead of waiting for the normal browser-send window. If the active turn ends before that happens, the message remains available as a normal queued follow-up rather than being lost.
+
+Queued follow-ups are manageable directly from the task UI: messages can be reordered, edited, deleted, promoted from queued to immediate, or demoted back to normal queue mode. Realtime queue events keep the panel synchronized when messages are consumed, and automatic sending is paused while compact/resume, bridge synchronization, another send, or an edit is in progress.
+
+This is useful when you already know the next step: you can line up several follow-up instructions for sequential execution, or inject a higher-priority instruction into the current MCP-driven workflow without manually waiting for each ChatGPT turn to become ready.
+
+### Compact & resume now
+
+Long ChatGPT conversations eventually become harder to continue reliably as their usable context fills up. **Compact & resume now** creates a durable handoff from the current ChatGPT conversation into a fresh one while keeping the same ChatCMD task, project, permissions, timeline, queued messages, and local task identity.
+
+How it works:
+
+1. **Confirm before anything is sent.** Selecting **Compact & resume now** opens a confirmation dialog. The optional **Continue work after compaction** checkbox starts unchecked on every opening; leave it unchecked to transfer context only, or opt in to automatically continue the working request after the replacement chat has been attached.
+2. **Freeze the task at a safe boundary.** ChatCMD fences new local MCP operations for the compacting task, waits for already-admitted operations to finish, and stops the current ChatGPT generation before asking the source conversation to produce its handoff. Existing drafts and queued follow-up messages are preserved rather than overwritten.
+3. **Write and persist the handoff first.** The source ChatGPT conversation receives a structured handoff request covering requirements, corrections, completed versus planned work, bug/fix/evidence chains, delegated work, environment details, blockers, and remaining tasks. The resulting public answer is saved durably in SQLite before ChatCMD is allowed to open or commit a replacement conversation.
+4. **Bootstrap a fresh ChatGPT conversation.** ChatCMD opens a new conversation and sends a no-tools resume/bootstrap message containing the saved handoff. It waits until the destination's real canonical ChatGPT conversation identity and resume marker are observed before changing the task's active conversation binding.
+5. **Keep the same ChatCMD task.** Completion archives the old ChatGPT URL and conversation metadata, retires obsolete bridge bindings, and points the existing task at the new conversation. The task ID, title, project folder, permission state, timeline, drafts, and queued messages stay with the original task instead of creating a second ChatCMD task.
+6. **Optionally continue the work.** Only when the saved opt-in is enabled does ChatCMD enqueue the deterministic post-handoff continuation request. Repeated resume calls are idempotent, so recovery or retries do not create duplicate working messages.
+7. **Retire the source tab conservatively.** After the new conversation is safely attached, ChatCMD attempts to close only the exact recorded source tab. If tab identity, draft state, generation state, or dispatch ownership is ambiguous, it leaves the tab open rather than risking closure of the wrong conversation.
+
+The UI shows live phases for preparing, writing the handoff, saving it, and opening the new chat. Compact state is persisted independently of the browser worker, so extension reloads, closed/reopened tabs, delayed Send availability, or lost responses can be reconciled from SQLite plus browser dispatch metadata instead of blindly repeating prompts. Completed compactions remain available in **Context compaction history**, including references to the archived source and replacement conversation.
+
+Compact & resume is intentionally fail-closed: if ChatCMD cannot prove which prompt was sent, which conversation produced the handoff, or which destination owns the resume marker, it pauses with a recoverable state instead of silently dropping context or binding the task to the wrong chat. See [docs/COMPACT_RESUME.md](docs/COMPACT_RESUME.md) for the full persistence, identity, recovery, and dispatch model.
+
+### Management console
+
+- Runtime dashboard for app, database, MCP listener, task, terminal, approval, and client health.
+- Project-aware task rail with search, pagination, rename, delete, unread counters, and workspace grouping.
+- Rich task timeline with Markdown, tool output, syntax highlighting, file-change summaries, side-by-side diffs, sub-agent status, and stop controls.
+- Conversation, activity, and plan-question approval queues.
+- Interactive xterm.js terminal views with live output, input, resize, process ID, CPU, and memory information.
+- Skill discovery, enable/disable controls, configurable skill options, GitHub repository preview, installation, and removal.
+- English and Vietnamese UI, light/dark/system themes, configurable Google Fonts, task font scaling, and event sounds.
+- SQLite diagnostics, application logs, extension logs, configurable data retention, and selective user-data cleanup.
+- Windows/macOS system tray behavior and an optional elevated restart flow.
+
+### ChatGPT browser bridge
+
+The optional `chatgpt-extension/` package can use an already signed-in `chatgpt.com` tab to:
+
+- start or continue a browser conversation from ChatCMD;
+- choose a visible ChatGPT model label;
+- queue, reorder, edit, send immediately, or delete follow-up messages;
+- stop an active generation;
+- relay final responses and conversation identity back to the local task;
+- show local conversation, tool, and plan-question approvals in ChatGPT;
+- provide a browser fallback for sub-agent work.
+
+This extension is an unofficial DOM bridge, not the OpenAI API. ChatGPT UI changes may require selector updates. See [chatgpt-extension/README.md](chatgpt-extension/README.md) for its security model and limitations.
+
+ChatCMD is an independent project and is not affiliated with or endorsed by OpenAI, ChatGPT, Cloudflare, or other third-party service providers. Their names and trademarks belong to their respective owners, and use of their services remains subject to their terms.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    AI["MCP client / web AI"] -->|"tokenized MCP URL"| MCP["Rust MCP server"]
+    GPT["ChatGPT tab"] <--> EXT["Optional browser extension"]
+    EXT <--> API["Encrypted local API + WebSocket"]
+    UI["React management console"] <--> API
+    MCP --> RT["Bounded local runtime"]
+    API --> RT
+    RT --> OS["PTY · files · Git · processes · skills"]
+    MCP --> DB[("SQLite")]
+    API --> DB
+```
+
+For component boundaries, data flow, and security assumptions, read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Requirements
+
+- [Rust](https://www.rust-lang.org/tools/install) **1.85 or newer** with Cargo.
+- [Node.js](https://nodejs.org/) **20.19 or newer**, or **22.12 or newer**, and npm (matching the checked-in Vite engine requirement).
+- [Git](https://git-scm.com/).
+- A supported local shell: PowerShell or `cmd.exe` on Windows; `bash` or `zsh` on macOS/Linux.
+- Platform build tools:
+  - Windows: Visual Studio Build Tools with the MSVC C++ workload.
+  - macOS: Xcode Command Line Tools.
+  - Linux: a C/C++ toolchain and the platform packages required by `winit`/`tray-icon` dependencies when building desktop targets.
+
+## Quick start from source
+
+```bash
+git clone https://github.com/int04/ChatCmd.git
+cd ChatCmd/web
+npm ci
+npm run build
+cd ..
+cargo run
+```
+
+Open <http://127.0.0.1:8080>. The first start creates and migrates the local SQLite database automatically.
+
+For frontend hot reload, run the backend and Vite separately:
+
+```bash
+# Terminal 1, repository root
+cargo run
+
+# Terminal 2
+cd web
+npm ci
+npm run dev
+```
+
+Then open <http://127.0.0.1:5173>. Vite proxies `/api` and `/ws` to the Rust server on port `8080`.
+
+## Connect an MCP client
+
+1. Open **Plugin list** in ChatCMD and select **Create new Plugin connection**.
+2. Give the profile a recognizable name.
+3. Select only the tool groups required for that client, then save the profile.
+4. For a local MCP client, choose **Create new access code** from the profile menu and save the one-time endpoint immediately.
+5. Add that URL as a Streamable HTTP MCP server in the client. No `Authorization` header is required; the secret is the final URL path segment.
+
+To connect a web-hosted AI through your own public endpoint, follow [docs/PLUGIN_SETUP.md](docs/PLUGIN_SETUP.md). It covers tunnel/reverse-proxy setup, the ChatGPT developer-mode flow, and installation of the optional browser extension.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CHATCMD_BIND` | `127.0.0.1` | Listener IP address. Keep loopback unless you understand the exposure and origin-policy consequences. |
+| `CHATCMD_PORT` | `8080` | HTTP, MCP, API, UI, and WebSocket port. |
+| `CHATCMD_DB_PATH` | Platform data directory | Override the SQLite database path. |
+| `CHATCMD_WEB_DIST` | `web/dist` | Use a different built frontend directory for non-embedded development builds. |
+| `CHATCMD_LOG_PATH` | `logs/chatcmd.log` | Override the append-only diagnostic log path. |
+| `CHATCMD_FINALIZATION_GRACE_SECONDS` | `120` | Auto-finalization grace period, clamped to 30–3,600 seconds. |
+| `CHATCMD_BUILD_VERSION` | Cargo package version | Version embedded into a build or release package. |
+| `RUST_LOG` | `chat_cmd_client=info,tower_http=info` | Configure Rust tracing filters. |
+
+Default database locations:
+
+- Windows: `%LOCALAPPDATA%\ChatCmdClient\data\chatcmd.db`
+- macOS: `~/Library/Application Support/ChatCmdClient/chatcmd.db`
+- Linux: `$XDG_DATA_HOME/chatcmd-client/chatcmd.db`, or `~/.local/share/chatcmd-client/chatcmd.db`
+
+Startup is idempotent. After a restart, stale running tasks and terminal sessions are marked interrupted.
+
+## Build release artifacts
+
+Create a standalone binary with the frontend embedded:
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+cargo build --release --features embedded-web
+```
+
+Maintainers can use the packaging scripts:
+
+```powershell
+# Windows x64 and x86
+.\scripts\build-windows.ps1 -Version 0.1.0
+```
+
+```bash
+# macOS Apple Silicon and Intel
+CHATCMD_BUILD_VERSION=0.1.0 ./scripts/build-macos.sh
+```
+
+The macOS script supports `MACOS_SIGN_IDENTITY` and `MACOS_NOTARY_PROFILE`. Full release instructions are in [docs/RELEASING.md](docs/RELEASING.md).
+
+To publish all four packages, open **Actions → Build desktop release → Run workflow** on GitHub and select `main`. The workflow runs only when started manually, generates a `yy.MM.dd.HHmm` version, and updates the repository's latest release; pushes and pull requests do not trigger it.
+
+## Verify a change
+
+```bash
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+
+cd web
+npm ci
+npm run lint
+npm test -- --run
+npm run build
+
+cd ../chatgpt-extension
+node --test content-chatgpt.test.cjs
+```
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the contributor workflow and narrower test commands.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Task workspace and final response</strong><br>
+      <a href="docs/images/screenshots/task-workspace.png"><img src="docs/images/screenshots/task-workspace.png" alt="ChatCMD task workspace showing a completed ChatGPT response and task details"></a>
+    </td>
+    <td width="50%" valign="top">
+      <strong>Agent activity timeline</strong><br>
+      <a href="docs/images/screenshots/agent-activity-timeline.png"><img src="docs/images/screenshots/agent-activity-timeline.png" alt="Expanded ChatCMD agent activity timeline with tool calls and progress updates"></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Side-by-side file diff</strong><br>
+      <a href="docs/images/screenshots/file-diff-viewer.png"><img src="docs/images/screenshots/file-diff-viewer.png" alt="ChatCMD side-by-side source file diff viewer"></a>
+    </td>
+    <td width="50%" valign="top">
+      <strong>Live sub-agent orchestration</strong><br>
+      <a href="docs/images/screenshots/subagent-orchestration-live.png"><img src="docs/images/screenshots/subagent-orchestration-live.png" alt="ChatCMD task running two sub-agents in parallel"></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Completed sub-agent work</strong><br>
+      <a href="docs/images/screenshots/subagent-orchestration-complete.png"><img src="docs/images/screenshots/subagent-orchestration-complete.png" alt="ChatCMD timeline showing two completed sub-agent tasks"></a>
+    </td>
+    <td width="50%" valign="top">
+      <strong>Plan question dialog</strong><br>
+      <a href="docs/images/screenshots/plan-question-dialog.png"><img src="docs/images/screenshots/plan-question-dialog.png" alt="ChatCMD plan-mode question dialog with two choices and a custom answer option"></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Plan-mode task and approval controls</strong><br>
+      <a href="docs/images/screenshots/plan-mode-task.png"><img src="docs/images/screenshots/plan-mode-task.png" alt="ChatCMD plan-mode task with reasoning history and execution approval controls"></a>
+    </td>
+    <td width="50%" valign="top">
+      <strong>Completed plan response</strong><br>
+      <a href="docs/images/screenshots/plan-result.png"><img src="docs/images/screenshots/plan-result.png" alt="ChatCMD completed plan response with task and ChatGPT details"></a>
+    </td>
+  </tr>
+</table>
+
+## Security and privacy
+
+- Treat every MCP URL as a password. The full tokenized URL can grant the profile's permissions to anyone who has it.
+- Local profile secrets are stored as hashes. Public plugin-link tokens are stored in the local SQLite database in recoverable plaintext so ChatCMD can copy the same link again; protect the database with operating-system account and disk controls.
+- Prefer loopback binding and an authenticated, HTTPS tunnel or reverse proxy for remote access.
+- The local management API requires a trusted caller marker and encrypts JSON bodies; the WebSocket uses an ephemeral ECDH-derived AES-GCM session. This is defense in depth, not protection from the owner of a compromised browser or machine.
+- The extension has no cookie permission and does not read or write ChatGPT login tokens, but it can interact with the signed-in ChatGPT page through its DOM.
+- Review [SECURITY.md](SECURITY.md) before reporting a vulnerability. Do not place secrets or private data in a public issue.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Plugin and ChatGPT setup](docs/PLUGIN_SETUP.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Development guide](docs/DEVELOPMENT.md)
+- [Open-source publication checklist](docs/OPEN_SOURCE_CHECKLIST.md)
+- [MCP method reference](docs/mcp_method.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Encryption protocol](docs/ENCRYPTION_PROTOCOL.md)
+- [Diagnostic logs](docs/logs.md)
+- [Release guide](docs/RELEASING.md)
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md), and [GOVERNANCE.md](GOVERNANCE.md) before opening a pull request. Use [SUPPORT.md](SUPPORT.md) to choose the right support channel.
+
+## License
+
+ChatCMD is available under the [MIT License](LICENSE). You may use, copy, modify, distribute, sublicense, and sell copies, including as part of commercial products, subject to the license notice and warranty disclaimer.
+
+Third-party dependencies, services, trademarks, and bundled media remain subject to their own licenses and terms.
+
+Copyright © 2026 Nghia Duc and ChatCMD contributors.

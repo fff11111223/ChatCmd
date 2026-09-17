@@ -1,0 +1,8 @@
+/target
+/.smoke/
+.idea/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+/release/
+/logs/*.log

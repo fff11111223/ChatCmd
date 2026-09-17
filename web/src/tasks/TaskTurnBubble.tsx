@@ -1,0 +1,465 @@
+import { subagentLabel, subagentTreeRows } from './subagentPresentation';
+import { TurnThinkingSources } from './TurnThinkingSources';
+import { browserThinking, isBrowserEvent } from './chatGptThinking';
+import { BookOpen, Bot, CheckCircle2, ChevronDown, CircleAlert, CircleStop, Clock3, ExternalLink, FileCode2, FilePenLine, GitBranch, LoaderCircle, MessageSquareText, Search, TerminalSquare, Wrench } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ChatRichText } from './rich-text/ChatRichText';
+import { api } from '../api';
+import { Modal } from '../components';
+import { appLocale, formatAppNumber, tr } from '../i18n';
+import { useRealtime } from '../realtime';
+import type { SubagentRun, TaskActivityDetail, TaskDetail, TaskTurn, TimelineEvent } from '../types';
+import { ApprovalDecisionActions } from './ApprovalDecisionActions';
+import { CompletionQualityCard } from './CompletionQualityCard';
+import { StopActivityDialog } from './StopActivityDialog';
+import { completionQualityReport } from './completionQuality';
+import {
+  activityCodeView,
+  activityDiffView,
+  activityCommand,
+  activityDuration,
+  activityLabel,
+  activityOutput,
+  activityInputDetails,
+  buildProcessBlocks,
+  buildTaskTurns,
+  duration,
+  mergeLiveDetail,
+  eventText,
+  findCompletionSignal,
+  findFinalResponse,
+  findUserMessage,
+  formatClockTime,
+  fsSearchCodeViews,
+  latestMessage,
+  summarizeActivities,
+  type ToolActivity,
+} from './taskTimeline';
+
+const TaskCodeViewer = lazy(async () => ({ default: (await import('../TaskCodeViewer')).TaskCodeViewer }));
+
+export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Codex Agent' }: { turn: TaskTurn; taskId: string; subagents?: SubagentRun[]; agentLabel?: string }) {
+  const events = turn.events ?? [];
+  const completion = findCompletionSignal(events);
+  const qualityReport = completionQualityReport(events);
+  const response = findFinalResponse(events);
+  const autoFinalized = completion?.payload.autoFinalized === true;
+  const userMessage = findUserMessage(events);
+  const visibleUserMessage = userMessage?.text.replace(/^\s*CMDGPT_SUBAGENT_ID=subagent-[A-Za-z0-9_-]+\s*$/gm, '').trim();
+  const browser = browserThinking(events);
+  const dualSources = agentLabel === 'ChatGPT' || events.some(isBrowserEvent);
+  const processEvents = events.filter((event) => event !== userMessage?.event && !isBrowserEvent(event));
+  const blocks = buildProcessBlocks(processEvents);
+  const activities = blocks.flatMap((block) => block.type === 'activities' ? block.activities : []);
+  const rawStatus = turn.status ?? 'incomplete';
+  const status = completion ? 'completed' : rawStatus;
+  const startedAt = turn.startedAtUtc ?? events[0]?.occurredAt ?? new Date().toISOString();
+  const finishedAt = turn.completedAtUtc ?? response?.event.occurredAt ?? completion?.event.occurredAt;
+  const stateLabel = status === 'running' ? tr('Processing…') : status === 'failed' ? tr('Failed') : status === 'incomplete' ? tr('Incomplete') : tr('Completed');
+  const isThinking = status === 'running' && !response && !activities.some((activity) => activity.status === 'started' || activity.status === 'pending_approval');
+  const headingId = `turn-${turn.id}`;
+  const [stopTarget, setStopTarget] = useState<ToolActivity | null>(null);
+  const [changeTarget, setChangeTarget] = useState<ToolActivity | null>(null);
+  const hasResponse = Boolean(response);
+  const [thinkingOpen, setThinkingOpen] = useState(() => !hasResponse);
+  const hasMcp = subagents.length > 0 || activities.length > 0 || blocks.some((block) => block.type === 'progress') || Boolean(response && !isBrowserEvent(response.event));
+  const hasThinkingContent = dualSources || subagents.length > 0 || activities.length > 0 || blocks.some((block) => block.type === 'progress') || isThinking || status === 'failed' || status === 'incomplete' || (status === 'completed' && autoFinalized && !hasResponse);
+  const fileChanges = response ? responseFileChanges(response.event) : [];
+  const fileChangeTrackingIncomplete = response ? responseFileChangeTrackingIncomplete(response.event) : false;
+
+  useEffect(() => {
+    setThinkingOpen(!hasResponse);
+  }, [hasResponse]);
+
+  return <div className="turn-item">
+    {userMessage && <article className="turn-user-message">
+      <header><strong>{tr('You')}</strong><BubbleTime value={userMessage.event.occurredAt} /></header>
+      <div className="turn-user-content"><ChatRichText content={visibleUserMessage ?? ''} /></div>
+    </article>}
+    <div className={`turn-end-status ${status}`} role={status === 'running' ? 'status' : undefined}>
+      {status === 'running'
+        ? <><LoaderCircle className="spin" /><span>{tr('Running for {duration}', { duration: '' }).replace(/\s+$/, '')} <LiveDuration startedAt={startedAt} /></span></>
+        : finishedAt
+          ? <><Clock3 /><span>{status === 'completed'
+            ? tr('Completed {time} · {duration}', { time: bubbleTimePhraseText(finishedAt), duration: duration(startedAt, finishedAt) })
+            : status === 'incomplete'
+              ? tr('No new signal since {time} · {duration}', { time: bubbleTimePhraseText(finishedAt), duration: duration(startedAt, finishedAt) })
+              : tr('Ended {time} · {duration}', { time: bubbleTimePhraseText(finishedAt), duration: duration(startedAt, finishedAt) })}</span></>
+          : null}
+    </div>
+    <div className="turn-item-divider" aria-hidden="true" />
+    <article className={`turn-bubble ${status}`} aria-labelledby={headingId} aria-busy={status === 'running'}>
+      <header className="turn-header">
+        <span className="turn-avatar" aria-hidden="true">{status === 'running' ? <LoaderCircle className="spin" /> : status === 'failed' || status === 'incomplete' ? <CircleAlert /> : <CheckCircle2 />}</span>
+        <div><h3 id={headingId}>{agentLabel}</h3><p>{status === 'running' ? tr('{count} activities', { count: formatAppNumber(activities.length) }) : <><span>{stateLabel}</span> · {tr('{count} activities', { count: formatAppNumber(activities.length) })}</>}</p></div>
+        {status === 'running' ? <time dateTime={startedAt} aria-hidden="true"><LiveDuration startedAt={startedAt} /></time> : <BubbleTime value={startedAt} ariaHidden />}
+      </header>
+      {hasThinkingContent && <section className={`turn-thinking-section ${thinkingOpen ? 'open' : 'collapsed'}`}>
+        <button type="button" className="turn-section-toggle" aria-expanded={thinkingOpen} onClick={() => setThinkingOpen((value) => !value)}>
+          <span><MessageSquareText aria-hidden="true" />{tr('Thinking')}</span><ChevronDown aria-hidden="true" />
+        </button>
+        {thinkingOpen && <div className="turn-thinking-content">
+          <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'}>
+          {subagents.length > 0 && <SubagentList agents={subagents} />}
+          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} />}
+          {isThinking && <div className="turn-thinking" role="status"><span>{tr('Thinking and preparing a response…')}</span></div>}
+          {status === 'failed' && (agentLabel === 'ChatGPT' && isChatGptSendDisabledMessage(latestMessage(events))
+            ? <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('Waiting to retry')}</strong><p>{tr('The ChatGPT send button is temporarily disabled. The system will retry in 10 seconds; you can cancel the send below.')}</p></div></div>
+            : <div className="turn-error" role="alert"><CircleAlert /><div><strong>{tr('Agent turn failed')}</strong><p>{latestMessage(events) || tr('The Agent could not complete this turn. Review the activity above to find the cause.')}</p></div></div>)}
+          {status === 'incomplete' && <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('This turn may have been interrupted')}</strong><p>{latestMessage(events) || tr('No new activity or completion signal was received for a long time. The turn may have been interrupted or delayed; its state will recover automatically if new data arrives.')}</p></div></div>}
+          {status === 'completed' && autoFinalized && !response && <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('Finalizer was not received')}</strong><p>{tr('No completion callback arrived from the Agent. ChatCMD stopped waiting after the inactivity grace period; later Agent activity will reopen the turn automatically.')}</p></div></div>}
+          </TurnThinkingSources>
+          <button type="button" className="turn-thinking-collapse" onClick={() => setThinkingOpen(false)}><ChevronDown aria-hidden="true" />{tr('Show less')}</button>
+        </div>}
+      </section>}
+      {status === 'completed' && response && <section className="turn-final-section">
+        <div className="turn-response"><div className="turn-response-label"><CheckCircle2 /> {tr('Final response')}</div><div className="turn-response-content"><RichText content={response.text} /></div></div>
+        {qualityReport && <CompletionQualityCard report={qualityReport} />}
+        {fileChangeTrackingIncomplete && <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('File change tracking was incomplete')}</strong><p>{tr('Some shell file events were dropped. The list below may not include every changed file.')}</p></div></div>}
+        {fileChanges.length > 0 && <TurnFileChanges changes={fileChanges} onOpen={(activity) => setChangeTarget(activity)} />}
+      </section>}
+    </article>
+    {stopTarget && taskId && <StopActivityDialog taskId={taskId} activity={stopTarget} onClose={() => setStopTarget(null)} />}
+    {changeTarget && <ActivityDiffModal activity={changeTarget} close={() => setChangeTarget(null)} />}
+  </div>;
+}
+
+export type TurnFileChange = { path: string; fileName: string; extension: string; kind: 'added' | 'deleted' | 'modified' | 'moved' | 'directoryCreated'; additions: number | null; deletions: number | null; confidence: string; diffArtifactRef?: string; activity: ToolActivity };
+
+export function responseFileChangeTrackingIncomplete(event: TimelineEvent): boolean {
+  const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : {};
+  return payload.fileChangeTrackingIncomplete === true;
+}
+
+export function responseFileChanges(event: TimelineEvent): TurnFileChange[] {
+  const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : {};
+  const raw = Array.isArray(payload.fileChanges) ? payload.fileChanges : [];
+  return raw.flatMap((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const value = item as Record<string, unknown>;
+    const path = typeof value.path === 'string' ? value.path : '';
+    const preview = value.preview && typeof value.preview === 'object' && !Array.isArray(value.preview) ? value.preview as Record<string, unknown> : {};
+    const before = typeof preview.before === 'string' ? preview.before : '';
+    const after = typeof preview.after === 'string' ? preview.after : '';
+    const kind = value.kind === 'added' || value.kind === 'deleted' || value.kind === 'moved' || value.kind === 'directoryCreated' ? value.kind : 'modified';
+    const confidence = typeof value.confidence === 'string' ? value.confidence : 'metadataOnly';
+    const diffArtifactRef = typeof value.diffArtifactRef === 'string' ? value.diffArtifactRef : undefined;
+    if (!path) return [];
+    const fileName = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+    const extension = fileName.includes('.') ? fileName.split('.').at(-1)?.toUpperCase() || 'FILE' : 'FILE';
+    const tool = kind === 'deleted' ? 'fs_delete' : 'fs_write_text';
+    const activity: ToolActivity = {
+      id: `file-change-${index}-${path}`,
+      tool,
+      kind: kind === 'deleted' ? 'delete' : 'edit',
+      input: { path },
+      output: { __chatcmdDiff: { path, before, after, beforeAvailable: typeof preview.before === 'string' } },
+      status: 'succeeded',
+      startedAt: event.occurredAt,
+      finishedAt: event.occurredAt,
+      turnId: event.turnId,
+    };
+    return [{ path, fileName, extension, kind,
+      additions: typeof value.additions === 'number' ? value.additions : null,
+      deletions: typeof value.deletions === 'number' ? value.deletions : null,
+      confidence, diffArtifactRef, activity }];
+  });
+}
+
+function TurnFileChanges({ changes, onOpen }: { changes: TurnFileChange[]; onOpen: (activity: ToolActivity) => void }) {
+  return <section className="turn-file-changes" aria-label={tr('Changed files')}>
+    <div className="turn-file-changes-heading"><FilePenLine aria-hidden="true" /><strong>{tr('Changed files')}</strong><span>{changes.length}</span></div>
+    <div className="turn-file-change-list">{changes.map((change, index) => {
+      const action = change.kind === 'added' ? tr('Added') : change.kind === 'deleted' ? tr('Deleted') : change.kind === 'moved' ? tr('Moved') : change.kind === 'directoryCreated' ? tr('Created') : tr('Modified');
+      return <button type="button" className={`turn-file-change-card ${change.kind}`} onClick={() => onOpen(change.activity)} key={`${change.path}:${index}`}>
+        <span className="turn-file-change-icon"><FileCode2 aria-hidden="true" /><small>{change.extension}</small></span>
+        <span className="turn-file-change-copy"><strong>{action} {change.fileName}</strong><small>{change.path}</small></span>
+        <span className="turn-file-change-lines" title={change.confidence}><b>+{change.additions ?? '?'}</b><i>-{change.deletions ?? '?'}</i></span>
+      </button>;
+    })}</div>
+  </section>;
+}
+
+function ActivityDiffModal({ activity, close }: { activity: ToolActivity; close: () => void }) {
+  const diffView = activityDiffView(activity);
+  if (!diffView) return null;
+  const command = activityCommand(activity);
+  return <Modal className="tool-activity-modal" title={activityLabel(activity)} description={`${formatClockTime(activity.startedAt)} · ${activityDuration(activity.startedAt, activity.finishedAt ?? new Date().toISOString())}`} close={close}>
+    <div className="activity-popup-content">
+      <div className="activity-command"><FileCode2 /><code>{command}</code></div>
+      <div className="tool-diff-view"><div className="tool-diff-pane"><div className="tool-diff-tab removed">{tr('Original file')}</div><code className="tool-diff-path">{diffView.path}</code>{diffView.beforeAvailable ? <Suspense fallback={<pre><code>{diffView.before}</code></pre>}><TaskCodeViewer code={diffView.before} path={diffView.path} highlightedLines={diffView.beforeMarks} label={tr('Original file')} /></Suspense> : <div className="tool-diff-unavailable">{tr('The original content was not available for this shell change.')}</div>}</div><div className="tool-diff-pane"><div className="tool-diff-tab added">{tr('Modified file')}</div><code className="tool-diff-path">{diffView.path}</code><Suspense fallback={<pre><code>{diffView.after}</code></pre>}><TaskCodeViewer code={diffView.after} path={diffView.path} highlightedLines={diffView.afterMarks} label={tr('Modified file')} /></Suspense></div></div>
+    </div>
+  </Modal>;
+}
+
+function SubagentList({ agents }: { agents: SubagentRun[] }) {
+  return <section className="turn-subagents" aria-label={tr('Subagents')}>
+    <div className="turn-subagents-heading"><Bot aria-hidden="true" /><strong>{tr('Subagents')}</strong><span>{agents.length}</span></div>
+    <div className="turn-subagents-list">{subagentTreeRows(agents).map(({ agent, depth }) => <div className="turn-subagent-branch" key={agent.id} data-depth={depth} style={{ paddingInlineStart: Math.min(depth, 5) * 14 }}>{depth > 0 && <small className="turn-subagent-parent">{subagentLabel('parent')}: {agent.parentName || agent.parentTaskId}</small>}<SubagentItem agent={agent} /></div>)}</div>
+  </section>;
+}
+
+function SubagentItem({ agent }: { agent: SubagentRun }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const pending = agent.status === 'pending';
+  const running = agent.status === 'running';
+  const failed = agent.status === 'failed';
+  const stopped = agent.status === 'stopped';
+  const timedOut = agent.status === 'timedOut';
+  const statusLabel = pending ? tr('Waiting to start') : running ? tr('Running') : agent.status === 'completed' ? tr('Done') : agent.status === 'stopped' ? tr('Stopped') : agent.status === 'interrupted' ? tr('Interrupted') : timedOut ? tr('Timed out') : failed ? tr('Failed') : agent.status;
+  const statusDetail = subagentStatusText(agent, statusLabel);
+  const content = <>
+    <span className={`turn-subagent-state ${agent.status}`} aria-hidden="true">{pending ? <Clock3 /> : running ? <LoaderCircle className="spin" /> : stopped ? <CircleStop /> : failed || timedOut || agent.status === 'interrupted' ? <CircleAlert /> : <CheckCircle2 />}</span>
+    <span className="turn-subagent-copy"><strong>{agent.name}</strong><small title={agent.terminalReason}>{statusDetail}</small></span>
+    {agent.taskId && <MessageSquareText className="turn-subagent-open" aria-hidden="true" />}
+  </>;
+  if (!agent.taskId) return <div className={`turn-subagent ${agent.status}`} aria-label={`${agent.name} - ${statusLabel}`}>{content}</div>;
+  return <>
+    <button type="button" className={`turn-subagent ${agent.status}`} onClick={() => setPreviewOpen(true)} aria-haspopup="dialog" aria-label={`${agent.name} - ${statusLabel} - ${subagentLabel('preview')}`}>{content}</button>
+    {previewOpen && <SubagentPreviewModal agent={agent} statusDetail={statusDetail} close={() => setPreviewOpen(false)} />}
+  </>;
+}
+
+function SubagentPreviewModal({ agent, statusDetail, close }: { agent: SubagentRun; statusDetail: string; close: () => void }) {
+  const taskId = agent.taskId!;
+  const taskHref = `/tasks/${encodeURIComponent(taskId)}`;
+  const [preview, setPreview] = useState<TaskDetail | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [previewError, setPreviewError] = useState('');
+  const loadPreview = useCallback((showLoading = false) => {
+    if (showLoading) setPreviewLoading(true);
+    setPreviewError('');
+    return api.task(taskId)
+      .then((next) => setPreview((current) => current ? mergeSubagentPreviewSnapshot(next, current) : next))
+      .catch((reason) => setPreviewError(reason instanceof Error ? reason.message : subagentLabel('previewError')))
+      .finally(() => setPreviewLoading(false));
+  }, [taskId]);
+
+  useEffect(() => { void loadPreview(true); }, [loadPreview]);
+  useRealtime((event) => {
+    if (event.type === 'system.resync_required' || event.type === 'system.connected') { void loadPreview(); return; }
+    if (event.taskId === taskId) {
+      if (event.type.startsWith('subagent.')) { void loadPreview(); return; }
+      setPreview((current) => current ? mergeLiveDetail({ ...current, events: subagentPreviewEvents(current) }, [event]) : current);
+      return;
+    }
+    if (!event.taskId || !preview?.subagents?.some((child) => child.taskId === event.taskId)) return;
+    if (event.type.startsWith('subagent.') || event.type === 'status') void loadPreview();
+  });
+
+  return <Modal className="subagent-preview-modal" title={agent.name} description={statusDetail} close={close}>
+    <div className="subagent-preview-body">
+      {previewLoading && !preview
+        ? <div className="subagent-preview-state" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div>
+        : previewError && !preview
+          ? <div className="subagent-preview-state error" role="alert"><CircleAlert aria-hidden="true" /><span>{previewError}</span><button type="button" className="button secondary compact" onClick={() => void loadPreview(true)}>{tr('Reload')}</button></div>
+          : preview
+            ? <SubagentPreviewBody detail={preview} />
+            : null}
+    </div>
+    <div className="subagent-preview-actions">
+      {previewError && preview && <span className="subagent-preview-live-error" role="status">{previewError}</span>}
+      <a className="button secondary subagent-preview-open" href={taskHref} target="_blank" rel="noreferrer noopener"><span aria-hidden="true">→</span>{subagentLabel('goToConversation')}<ExternalLink aria-hidden="true" /></a>
+    </div>
+  </Modal>;
+}
+
+function subagentPreviewEvents(detail: TaskDetail) {
+  return detail.events?.length ? detail.events : (detail.turns ?? []).flatMap((turn) => turn.events ?? []);
+}
+
+function mergeSubagentPreviewSnapshot(next: TaskDetail, current: TaskDetail) {
+  return mergeLiveDetail({ ...next, events: subagentPreviewEvents(next) }, subagentPreviewEvents(current));
+}
+
+function SubagentPreviewBody({ detail }: { detail: TaskDetail }) {
+  const events = detail.events ?? [];
+  const turns = detail.turns?.length ? detail.turns : buildTaskTurns(events, detail.task);
+  const chatGpt = detail.task.source === 'chatgpt_web';
+  if (!turns.length) return <div className="subagent-preview-state" role="status"><MessageSquareText aria-hidden="true" /><span>{tr('Agent processing, tools, and conclusions will appear here.')}</span></div>;
+  return <section className="task-bubble-timeline turn-timeline subagent-preview-timeline" aria-label={tr('Conversation activity')}>
+    {turns.map((turn) => <TaskTurnBubble turn={turn} taskId={detail.task.id} agentLabel={chatGpt ? 'ChatGPT' : tr('Codex Agent')} subagents={(detail.subagents ?? []).filter((child) => (child.rootTurnId ?? child.parentTurnId) === turn.id)} key={turn.id} />)}
+  </section>;
+}
+
+export function subagentStatusText(agent: Pick<SubagentRun, 'attempt' | 'terminalReason'>, statusLabel: string) {
+  return `${statusLabel}${agent.attempt > 0 ? ` · ${tr('Attempt')} ${agent.attempt}` : ''}${agent.terminalReason ? ` · ${agent.terminalReason}` : ''}`;
+}
+
+function TurnProcess({ blocks, taskId, onStop }: { blocks: ReturnType<typeof buildProcessBlocks>; taskId: string; onStop: (activity: ToolActivity) => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
+  const last = blocks.at(-1);
+  const updateKey = `${blocks.length}:${last?.key ?? 'empty'}:${last?.type === 'activities' ? last.activities.at(-1)?.finishedAt ?? '' : last?.event.occurredAt ?? ''}`;
+  useLayoutEffect(() => {
+    if (!nearBottomRef.current) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const frame = window.requestAnimationFrame(() => root.scrollTo({ top: root.scrollHeight, behavior: 'auto' }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [updateKey]);
+  const updateScrollPosition = () => { const root = scrollRef.current; if (root) nearBottomRef.current = root.scrollHeight - root.scrollTop - root.clientHeight < 48; };
+  return <div ref={scrollRef} className="turn-activities turn-process" role="region" tabIndex={0} aria-label={tr('Agent progress')} onScroll={updateScrollPosition}>
+    {blocks.map((block) => block.type === 'progress'
+      ? <ProgressMessage event={block.event} key={block.key} />
+      : <ActivityBatch activities={block.activities} taskId={taskId} onStop={onStop} key={block.key} />)}
+  </div>;
+}
+
+function ActivityBatch({ activities, taskId, onStop }: { activities: ToolActivity[]; taskId: string; onStop: (activity: ToolActivity) => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
+  const last = activities.at(-1);
+  const updateKey = `${activities.length}:${last?.id ?? 'empty'}:${last?.status ?? ''}:${last?.finishedAt ?? ''}`;
+  useLayoutEffect(() => {
+    if (!nearBottomRef.current) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const frame = window.requestAnimationFrame(() => root.scrollTo({ top: root.scrollHeight, behavior: 'auto' }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [updateKey]);
+  const updateScrollPosition = () => {
+    const root = scrollRef.current;
+    if (root) nearBottomRef.current = root.scrollHeight - root.scrollTop - root.clientHeight < 48;
+  };
+  return <section className="turn-activity-batch" aria-label={summarizeActivities(activities)}>
+    <div className="turn-activity-summary" role="status"><Wrench aria-hidden="true" /><p>{summarizeActivities(activities)}</p></div>
+    <div ref={scrollRef} className="turn-activity-rows" onScroll={updateScrollPosition}>{activities.map((activity) => <ActivityRow activity={activity} taskId={taskId} onStop={onStop} key={activity.id} />)}</div>
+  </section>;
+}
+
+function ProgressMessage({ event }: { event: TimelineEvent }) {
+  return <div className="turn-progress-message"><MessageSquareText aria-hidden="true" /><div className="turn-progress-content turn-response-content"><RichText content={eventText(event)} /></div><time dateTime={event.occurredAt}>{formatClockTime(event.occurredAt)}</time></div>;
+}
+
+function RichText({ content }: { content: string }) {
+  return <ChatRichText content={content} />;
+}
+
+function ActivityRow({ activity, taskId, onStop }: { activity: ToolActivity; taskId: string; onStop: (activity: ToolActivity) => void }) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<TaskActivityDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [recentlyViewed, setRecentlyViewed] = useState(false);
+  useEffect(() => { if (!recentlyViewed) return; const timer = window.setTimeout(() => setRecentlyViewed(false), 3000); return () => window.clearTimeout(timer); }, [recentlyViewed]);
+  const closePopup = () => { setOpen(false); setRecentlyViewed(false); window.requestAnimationFrame(() => setRecentlyViewed(true)); };
+  const loadDetail = () => {
+    setOpen(true); setDetail(null); setDetailError(''); setDetailLoading(true);
+    void api.taskActivity(taskId, activity.id)
+      .then(setDetail)
+      .catch((reason) => setDetailError(reason instanceof Error ? reason.message : tr('Could not load tool details.')))
+      .finally(() => setDetailLoading(false));
+  };
+  const approvalPending = activity.status === 'pending_approval';
+  const stopRequested = activity.status === 'stop_requested';
+  const stopped = activity.status === 'stopped';
+  const interrupted = activity.status === 'interrupted';
+  const ended = stopped || interrupted;
+  const running = activity.status === 'started' || approvalPending || stopRequested;
+  const failed = activity.status === 'failed';
+  const stoppable = activity.status === 'started';
+  const Icon = ended ? CircleStop : failed ? CircleAlert : activity.kind === 'read' ? BookOpen : activity.kind === 'search' ? Search : ['edit', 'create', 'delete', 'copy', 'move'].includes(activity.kind) ? FilePenLine : activity.kind === 'git' ? GitBranch : activity.kind === 'tool' ? Wrench : TerminalSquare;
+  const resolvedActivity: ToolActivity = detail ? { ...activity, ...detail, status: detail.status ?? activity.status } : activity;
+  return <div className={`terminal-activity ${running ? 'running' : ''} ${stopRequested ? 'stopping' : ''} ${ended ? 'stopped' : ''} ${failed ? 'failed' : ''} ${recentlyViewed ? 'recently-viewed' : ''}`}>
+    <button type="button" className="activity-popup-trigger" onClick={loadDetail} aria-haspopup="dialog">
+      <span className="activity-row-icon" aria-hidden="true">{running ? <LoaderCircle className="spin" /> : <Icon />}</span>
+      <span className="activity-label">{activityLabel(activity)}</span>
+      <span className="activity-timing"><BubbleTime value={activity.startedAt} /><span aria-label={tr('Execution time')}>· {running ? <LiveActivityDuration startedAt={activity.startedAt} /> : activityDuration(activity.startedAt, activity.finishedAt ?? activity.startedAt)}</span></span>
+      <ChevronDown className="activity-chevron" aria-hidden="true" />
+    </button>
+    {stoppable && <button type="button" className="activity-stop-button" aria-label={tr('Stop {name}', { name: activityLabel(activity) })} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onStop(activity); }}><CircleStop aria-hidden="true" /><span>{tr('Stop')}</span></button>}
+    {approvalPending && taskId && <ApprovalDecisionActions target={{ taskId, activityId: activity.id, turnId: activity.turnId }} reusable={isSafeReadApproval(activity.input)} />}
+    {open && <Modal className="tool-activity-modal" title={activityLabel(activity)} description={`${formatClockTime(activity.startedAt)} · ${activityDuration(activity.startedAt, activity.finishedAt ?? new Date().toISOString())}`} close={closePopup}>
+      {detailLoading
+        ? <div className="activity-popup-content"><div className="activity-detail-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div></div>
+        : detailError
+          ? <div className="activity-popup-content"><div className="activity-error-detail" role="alert"><div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Could not load tool details.')}</strong></div><div className="activity-error-message">{detailError}</div><button className="button secondary compact" type="button" onClick={loadDetail}>{tr('Reload')}</button></div></div>
+          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} />}
+    </Modal>}
+  </div>;
+}
+
+function isSafeReadApproval(input: unknown) {
+  if (!input || typeof input !== 'object') return false;
+  const risk = (input as { riskClass?: unknown }).riskClass;
+  return risk === 'metadataRead' || risk === 'contentRead' || risk === 'computeRead';
+}
+
+function ActivityPopupContent({ activity, approvalPending, running }: { activity: ToolActivity; approvalPending: boolean; running: boolean }) {
+  const failed = activity.status === 'failed';
+  const command = activityCommand(activity);
+  const output = activityOutput(activity);
+  const inputDetails = activityInputDetails(activity);
+  const searchCodeViews = fsSearchCodeViews(activity);
+  const diffView = activityDiffView(activity);
+  const codeView = activityCodeView(activity);
+  return <div className="activity-popup-content">
+    <div className="activity-command"><FileCode2 /><code>{command}</code></div>
+    {inputDetails.length > 0 && <section className="activity-input-details" aria-label={tr('Tool input details')}><header><strong>{tr('Request details')}</strong><code>{activity.tool}</code></header><dl>{inputDetails.map((item) => <div key={`${item.label}:${item.value}`}><dt>{item.label}</dt><dd>{item.code ? <code>{item.value}</code> : item.value}</dd></div>)}</dl></section>}
+    {failed && <div className="activity-error-detail" role="alert">
+      <div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Tool failed')}</strong></div>
+      {activity.errorCode && <div className="activity-error-row"><span>{tr('Error code')}</span><code>{activity.errorCode}</code></div>}
+      <div className="activity-error-message">{activity.errorMessage || activity.error || tr('Tool returned failed status without an error message.')}</div>
+      {activity.errorDetails !== undefined && activity.errorDetails !== null && <pre tabIndex={0} aria-label={tr('Tool error details')}><code>{formatErrorDetails(activity.errorDetails)}</code></pre>}
+    </div>}
+    {diffView
+      ? <div className="tool-diff-view"><div className="tool-diff-pane"><div className="tool-diff-tab removed">{tr('Original file')}</div><code className="tool-diff-path">{diffView.path}</code><Suspense fallback={<pre><code>{diffView.before}</code></pre>}><TaskCodeViewer code={diffView.before} path={diffView.path} highlightedLines={diffView.beforeMarks} label={tr('Original file')} /></Suspense></div><div className="tool-diff-pane"><div className="tool-diff-tab added">{tr('Modified file')}</div><code className="tool-diff-path">{diffView.path}</code><Suspense fallback={<pre><code>{diffView.after}</code></pre>}><TaskCodeViewer code={diffView.after} path={diffView.path} highlightedLines={diffView.afterMarks} label={tr('Modified file')} /></Suspense></div></div>
+      : searchCodeViews.length > 0
+        ? <div className="fs-search-code-results">{searchCodeViews.map((view, index) => <div className="fs-search-code-result" key={`${view.path}:${view.startLine}:${index}`}><code className="fs-search-result-path">{view.path}</code><Suspense fallback={<pre tabIndex={0} aria-label={tr('Output of {command}', { command })}><code>{view.code}</code></pre>}><TaskCodeViewer {...view} label={view.path} /></Suspense></div>)}</div>
+        : codeView
+          ? <Suspense fallback={<pre tabIndex={0} aria-label={tr('Output of {command}', { command })}><code>{codeView.code}</code></pre>}><TaskCodeViewer {...codeView} label={tr('Output of {command}', { command })} /></Suspense>
+          : <pre tabIndex={0} aria-label={tr('Output of {command}', { command })}><code>{output || (approvalPending ? tr('Waiting for your approval…') : running ? tr('Waiting for output…') : tr('Command produced no output.'))}</code></pre>}
+  </div>;
+}
+
+function formatErrorDetails(value: unknown) { if (typeof value === 'string') return value; try { return JSON.stringify(value, null, 2); } catch { return String(value); } }
+function isChatGptSendDisabledMessage(value: string) { return value.includes('Nút gửi ChatGPT đang bị vô hiệu hóa.') || value.includes('The ChatGPT send button is disabled.'); }
+
+function BubbleTime({ value, ariaHidden = false }: { value: string; ariaHidden?: boolean }) {
+  const nowMs = useAdaptiveNow(value);
+  return <time dateTime={value} title={bubbleTimeHint(value)} aria-hidden={ariaHidden || undefined}>{bubbleTimeLabel(value, nowMs)}</time>;
+}
+
+function bubbleTimePhraseText(value: string) {
+  const timestamp = Date.parse(value);
+  const nowMs = Date.now();
+  const elapsedSeconds = Number.isFinite(timestamp) ? Math.max(0, Math.floor((nowMs - timestamp) / 1000)) : 0;
+  const label = bubbleTimeLabel(value, nowMs);
+  return elapsedSeconds >= 3600 ? tr('at {time}', { time: label }) : label;
+}
+
+function LiveDuration({ startedAt }: { startedAt: string }) { const nowMs = useLiveSecondClock(); return <>{duration(startedAt, new Date(nowMs).toISOString())}</>; }
+function LiveActivityDuration({ startedAt }: { startedAt: string }) { const nowMs = useLiveSecondClock(); return <>{activityDuration(startedAt, new Date(nowMs).toISOString())}</>; }
+
+function useAdaptiveNow(value: string) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timestamp = Date.parse(value); if (!Number.isFinite(timestamp)) return; let timer: number | undefined;
+    const schedule = () => { const current = Date.now(); const elapsed = Math.max(0, current - timestamp); if (elapsed >= 3_600_000) return; const interval = elapsed < 60_000 ? 1_000 : 60_000; const delay = interval - (current % interval) + 20; timer = window.setTimeout(() => { if (document.visibilityState !== 'visible') { timer = undefined; return; } setNowMs(Date.now()); schedule(); }, delay); };
+    const onVisibility = () => { if (document.visibilityState !== 'visible') return; if (timer !== undefined) window.clearTimeout(timer); setNowMs(Date.now()); schedule(); };
+    schedule(); document.addEventListener('visibilitychange', onVisibility); return () => { if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibility); };
+  }, [value]);
+  return nowMs;
+}
+
+function useLiveSecondClock() {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    let timer: number | undefined;
+    const schedule = () => { timer = window.setTimeout(() => { if (document.visibilityState !== 'visible') { timer = undefined; return; } setNowMs(Date.now()); schedule(); }, 1_000); };
+    const onVisibility = () => { if (document.visibilityState !== 'visible') return; if (timer !== undefined) window.clearTimeout(timer); setNowMs(Date.now()); schedule(); };
+    schedule(); document.addEventListener('visibilitychange', onVisibility); return () => { if (timer !== undefined) window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibility); };
+  }, []);
+  return nowMs;
+}
+
+function bubbleTimeLabel(value: string, nowMs: number) {
+  const timestamp = Date.parse(value); if (!Number.isFinite(timestamp)) return value;
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - timestamp) / 1000));
+  if (elapsedSeconds < 60) return tr('{count} seconds ago', { count: elapsedSeconds });
+  if (elapsedSeconds < 3600) return tr('{count} minutes ago', { count: Math.floor(elapsedSeconds / 60) });
+  return new Intl.DateTimeFormat(appLocale(), { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(timestamp));
+}
+function bubbleTimeHint(value: string) { const timestamp = Date.parse(value); if (!Number.isFinite(timestamp)) return value; return new Intl.DateTimeFormat(appLocale(), { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(timestamp)); }
+
