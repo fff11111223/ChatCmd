@@ -109,6 +109,7 @@ async function runRequest(message) {
     if (owner) owner.observer = globalThis.ChatCmdObserver?.create(message.requestId, message.submittedContent, {
       current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
     });
+    globalThis.ChatCmdToolBridge?.reset?.();
     await attachTextFiles(composer, message.attachments);
     setComposerText(composer, message.submittedContent);
     await submitPrompt(composer);
@@ -145,6 +146,7 @@ async function runRequest(message) {
       };
       const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(message.requestId, currentResult, bridgeSubmit);
       if (!dispatched || requestObservationLost(owner)) return;
+      globalThis.ChatCmdToolBridge?.reset?.();
       if (owner) {
         owner.observer?.finish?.();
         owner.observer = globalThis.ChatCmdObserver?.create(message.requestId, submittedReply, {

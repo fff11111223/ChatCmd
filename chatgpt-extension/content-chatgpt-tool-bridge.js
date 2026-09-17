@@ -45,7 +45,16 @@
 
     function tryAdd(raw) {
       try {
-        const obj = JSON.parse(raw.trim());
+        const trimmed = String(raw || '').trim();
+        let candidate = trimmed;
+        if (!candidate.startsWith('{')) {
+          const firstBrace = candidate.indexOf('{');
+          const lastBrace = candidate.lastIndexOf('}');
+          if (firstBrace !== -1 && lastBrace > firstBrace) {
+            candidate = candidate.slice(firstBrace, lastBrace + 1);
+          }
+        }
+        const obj = JSON.parse(candidate);
         const id = String(obj.id || '').trim();
         const tool = String(obj.tool || '').trim();
         if (!id || !tool || seen.has(id)) return;
@@ -69,7 +78,7 @@
 
     // 3. Fallback: Any JSON code block with "tool" and "id"
     if (calls.length === 0) {
-      const genericBlockPattern = /`{3,}(?:json)?\s*\n([\s\S]*?)`{3,}/gi;
+      const genericBlockPattern = /`{3,}[^\n]*\n([\s\S]*?)`{3,}/gi;
       while ((m = genericBlockPattern.exec(text)) !== null) {
         const candidate = m[1].trim();
         if (candidate.includes('"tool"') && candidate.includes('"id"')) {
@@ -181,10 +190,16 @@
     return true;
   }
 
+  function reset() {
+    executedCallIds.clear();
+    inflight.clear();
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────
 
   globalThis.ChatCmdToolBridge = Object.freeze({
     hasPendingToolCalls,
     runPendingCalls,
+    reset,
   });
 })();

@@ -52,9 +52,13 @@
     if (!(node instanceof Element) || hidden(node)) return '';
     const tag = node.tagName.toLowerCase();
     if (tag === 'pre') {
-      const text = plainText(node.querySelector('code') || node);
+      const code = node.querySelector('code');
+      const langMatch = code?.className?.match(/language-([^\s]+)/);
+      const lang = langMatch ? langMatch[1] : '';
+      const text = (code ? (code.textContent || '') : plainText(node)).trimEnd();
+      if (!text.trim()) return '';
       const fence = '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((match) => match[0].length + 1)));
-      return `\n\n${fence}\n${text.trimEnd()}\n${fence}\n\n`;
+      return `\n\n${fence}${lang}\n${text}\n${fence}\n\n`;
     }
     const text = [...node.childNodes].map(markdown).join('');
     if (tag === 'br') return '\n';
