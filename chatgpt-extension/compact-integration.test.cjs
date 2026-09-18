@@ -125,7 +125,7 @@ test('user continuing immediately after RESUME acknowledgement still completes s
   await env.worker.tick();
   assert.equal(destination.state.clicks, 1);
   assert.equal(env.worker.serverJob().phase, 'opening_new_chat');
-  destination.user('tiếp tục công việc', 'working-user');
+  destination.user('continue the work', 'working-user');
   destination.answer('conversation_compacting_or_archived', { id: 'blocked-working-answer' });
   await env.worker.tick();
   assert.equal(env.worker.serverJob().phase, 'completed');

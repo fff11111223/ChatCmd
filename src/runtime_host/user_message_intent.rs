@@ -11,8 +11,8 @@ pub(super) fn is_plan_mode_request(content: &str) -> bool {
         "không cần lập kế hoạch",
         "không lên kế hoạch",
         "không lập kế hoạch",
-        "đừng lên kế hoạch",
-        "đừng lập kế hoạch",
+        "do not make a plan",
+        "do not make a plan",
         "do not plan",
         "don't plan",
         "no plan needed",
@@ -34,10 +34,10 @@ pub(super) fn is_explicit_multi_agent_request(content: &str) -> bool {
     let negated = [
         "không chia agent",
         "không cần chia agent",
-        "đừng chia agent",
+        "do not split agents",
         "không thử chia agent",
         "không cần thử chia agent",
-        "đừng thử chia agent",
+        "do not try to split agents",
         "không muốn chia agent",
         "không dùng nhiều agent",
         "không sử dụng nhiều agent",
@@ -96,10 +96,10 @@ pub(super) fn intent_hint(content: &str) -> Value {
         "plan"
     } else if [
         "chỉ review",
-        "chỉ đánh giá",
+        "only evaluate",
         "review only",
         "do not edit",
-        "đừng sửa",
+        "do not modify",
     ]
     .iter()
     .any(|phrase| normalized.contains(phrase))
@@ -161,13 +161,13 @@ mod tests {
     #[test]
     fn planning_trigger_ignores_negation_quotes_and_code() {
         assert!(is_plan_mode_request("Lên kế hoạch cho tôi mua quà"));
-        assert!(is_plan_mode_request("LẬP   KẾ HOẠCH\nwebsite bán hàng"));
+        assert!(is_plan_mode_request("MAKE   A PLAN\\nsales website"));
         assert!(is_plan_mode_request("Xây website giúp tôi #PLAN"));
         assert!(!is_plan_mode_request("Cho tôi xem kế hoạch hiện tại"));
-        assert!(!is_plan_mode_request("Dùng planner để theo dõi công việc"));
+        assert!(!is_plan_mode_request("Use the planner to track the work"));
         assert!(!is_plan_mode_request("Không cần lên kế hoạch, sửa luôn"));
         assert!(!is_plan_mode_request(
-            "Đừng lập kế hoạch; implement trực tiếp"
+            "Do not make a plan; implement directly"
         ));
         assert!(!is_plan_mode_request("Log ghi `#plan` nhưng hãy sửa lỗi"));
         assert!(!is_plan_mode_request(
@@ -179,22 +179,22 @@ mod tests {
     #[test]
     fn multi_agent_intent_requires_an_explicit_user_request() {
         assert!(is_explicit_multi_agent_request(
-            "Chia agent đọc file giúp tôi"
+            "Split an agent to read files for me"
         ));
         assert!(is_explicit_multi_agent_request(
             "Chia agent: create delegated reviewer"
         ));
         assert!(is_explicit_multi_agent_request(
-            "Thử chia agent đọc các file chưa commit"
+            "Try splitting an agent to read the uncommitted files"
         ));
         assert!(is_explicit_multi_agent_request(
-            "Chia ra 3 agent để audit song song"
+            "Split into 3 agents to audit in parallel"
         ));
         assert!(is_explicit_multi_agent_request(
             "Use multiple agents to review this repo"
         ));
         assert!(!is_explicit_multi_agent_request(
-            "Rà soát toàn bộ source code, sub agent, để tìm lỗi"
+            "Review the entire source code and subagents to find errors"
         ));
         assert!(!is_explicit_multi_agent_request(
             "Kiểm tra logic chia agent hiện tại"
@@ -209,7 +209,7 @@ mod tests {
             "Review chuỗi `chia agent` trong source"
         ));
         assert!(!is_explicit_multi_agent_request(
-            "Đừng thử chia agent; làm trong cuộc trò chuyện hiện tại"
+            "Do not try to split agents; work in the current conversation"
         ));
         assert!(!is_explicit_multi_agent_request(
             "Review nhãn \"thử chia agent\" trong UI"
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn intent_hint_never_grants_execution_permission() {
-        let review = intent_hint("Chỉ review, đừng sửa");
+        let review = intent_hint("Chỉ review, do not modify");
         assert_eq!(review["workflowKind"], "review");
         assert_eq!(review["authoritative"], false);
         assert_eq!(review["grantsExecutionPermission"], false);

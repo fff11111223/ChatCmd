@@ -23,8 +23,8 @@ export function textAttachmentFromPaste(text: string, sequence: number): ChatGpt
 export function messageContentWithTextAttachments(content: string, attachments: ChatGptTextAttachment[]) {
   const message = content.trim();
   if (message || !attachments.length) return message;
-  if (attachments.length === 1) return `Nội dung tin nhắn nằm trong tệp đính kèm ${attachments[0].name}.`;
-  return `Nội dung tin nhắn nằm trong các tệp đính kèm: ${attachments.map((attachment) => attachment.name).join(', ')}.`;
+  if (attachments.length === 1) return `Message content is in the attached file ${attachments[0].name}.`;
+  return `Message content is in the attached files: ${attachments.map((attachment) => attachment.name).join(', ')}.`;
 }
 
 export function fileAttachmentPayloads(attachments: ChatGptTextAttachment[]): ChatGptFileAttachmentPayload[] {

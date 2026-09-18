@@ -117,7 +117,7 @@ pub(super) async fn update_workspace_project(
         return Err(Problem::new(
             StatusCode::CONFLICT,
             "Workspace project already exists",
-            "Thư mục này đã được dùng bởi một dự án khác.",
+            "This folder is already used by another project.",
         ));
     }
 
@@ -307,7 +307,7 @@ fn normalize_chatgpt_project_url(value: Option<&str>) -> Result<Option<String>, 
         return Err(Problem::new(
             StatusCode::BAD_REQUEST,
             "Invalid ChatGPT project link",
-            "Link dự án ChatGPT phải có dạng https://chatgpt.com/g/g-p-{MÃ}/project.",
+            "The ChatGPT project link must have the form [https://chatgpt.com/g/g-p-{ID}/project.](https://chatgpt.com/g/g-p-{ID}/project.)",
         ));
     }
     Ok(Some(value.to_owned()))

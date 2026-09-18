@@ -49,7 +49,7 @@ pub(super) async fn delete_task_by_id(
             return Err(Problem::new(
                 StatusCode::CONFLICT,
                 "Subagent task is still active",
-                "Không thể xóa đoạn trò chuyện vì vẫn còn agent con đang chạy. Hãy đợi agent con kết thúc hoặc dừng nó trước.",
+                "Cannot delete the conversation because a child agent is still running. Wait for the child agent to finish or stop it first.",
             ));
         }
     }
@@ -362,7 +362,7 @@ async fn cleanup_user_generated_data(state: &Arc<AppState>) -> Result<(), Proble
         return Err(Problem::new(
             StatusCode::CONFLICT,
             "User data is still active",
-            "Không thể xóa toàn bộ dữ liệu khi vẫn còn công việc hoặc terminal đang chạy. Hãy dừng hoặc chờ các công việc hiện tại kết thúc trước.",
+            "Cannot delete all data while work or a terminal is still running. Stop or wait for the current work to finish first.",
         ));
     }
 
@@ -414,6 +414,6 @@ fn active_task_problem() -> Problem {
     Problem::new(
         StatusCode::CONFLICT,
         "Task is still active",
-        "Chỉ có thể xóa đoạn trò chuyện sau khi task đã kết thúc.",
+        "The conversation can only be deleted after the task has ended.",
     )
 }

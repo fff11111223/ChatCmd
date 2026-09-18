@@ -1,7 +1,7 @@
 (() => {
 const AUTO_RETRY_ENABLED = false, MAX_AUTO_RETRIES = 2, RAW_BUBBLE_STABILITY_MS = 1_200;
 const SILENT_RETRY_GRACE_MS = 8_000, ERROR_INTERRUPT_GRACE_MS = 2_500, COMPLETION_PING_INTERVAL_MS = 1_000;
-const INTERRUPTED_PROGRESS_PROMPT = 'Tôi vừa bị gián đoạn kết nối. Vui lòng kiểm tra trạng thái công việc ở lượt trước. Nếu chưa hoàn tất, hãy tiếp tục từ trạng thái hiện tại và hoàn thành phần còn lại; không làm lại những phần đã xong. Nếu đã hoàn tất, hãy trả lại kết quả cuối.';
+const INTERRUPTED_PROGRESS_PROMPT = 'I was just disconnected. Please check the work status from the previous turn. If it is not complete, continue from the current state and finish the remaining work; do not redo completed parts. If it is complete, return the final result.';
 const {
   assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError,
   findVisible, isVisible, latestMessageText, normalize,
@@ -32,7 +32,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
     }
     if (activeRequest && Date.now() - activeRequest.startedAt < 1_500) {
-      sendResponse({ ok: false, error: 'Tab ChatGPT này đang xử lý một request khác.' });
+      sendResponse({ ok: false, error: 'This ChatGPT tab is processing another request.' });
       return false;
     }
     if (document.documentElement?.dataset) document.documentElement.dataset.chatcmdRequestId = message.requestId;
@@ -46,7 +46,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message?.type === 'chatcmd-chatgpt-stop') {
     if (!activeRequest || activeRequest.id !== message.requestId) {
-      sendResponse({ ok: false, error: 'Không tìm thấy lượt ChatGPT đang chạy trên tab này.' });
+      sendResponse({ ok: false, error: 'No running ChatGPT turn was found on this tab.' });
       return false;
     }
     activeRequest.stopRequested = true;
@@ -230,14 +230,14 @@ function isUsableComposer(element) {
 
 function composerMissingMessage() {
   const path = `${window.location.pathname}${window.location.search}` || '/';
-  return `Không tìm thấy ô nhập ChatGPT trên ${path}. Hãy kiểm tra tab ChatGPT đầu tiên đang ở giao diện chat và bạn đã đăng nhập.`;
+  return `Could not find the ChatGPT input on ${path}. Check that the first ChatGPT tab is on the chat interface and that you are signed in.`;
 }
 
 async function selectModel(model) {
   const target = String(model || '').trim();
-  if (!target || ['auto', 'default', 'mặc định'].includes(target.toLowerCase())) return;
+  if (!target || ['auto', 'default', 'default'].includes(target.toLowerCase())) return;
   const button = findModelSwitcherButton();
-  if (!button) throw new Error(`ChatGPT hiện không hiển thị bộ chọn model cụ thể. Hãy dùng Auto trên giao diện ChatCMD.`);
+  if (!button) throw new Error(`ChatGPT does not currently show a specific model selector. Use Auto in the ChatCMD interface.`);
   button.click();
   await delay(250);
   const option = await waitFor(() => {
@@ -309,7 +309,7 @@ async function attachTextFiles(composer, rawAttachments) {
   await waitFor(
     () => files.every((file) => document.body?.textContent?.includes(file.name)) ? true : null,
     12_000,
-    `ChatGPT không xác nhận tệp đính kèm ${files.map((file) => file.name).join(', ')}.`,
+    `ChatGPT did not confirm the attachment ${files.map((file) => file.name).join(', ')}.`,
   );
 }
 
@@ -356,9 +356,9 @@ function pasteFilesIntoComposer(composer, files) {
 
 async function submitPrompt(composer) {
   await delay(100);
-  const button = await waitFor(findSendButton, 5_000, 'Không tìm thấy nút gửi của ChatGPT.');
+  const button = await waitFor(findSendButton, 5_000, 'ChatGPT send button was not found.');
   if (button.disabled || button.getAttribute('aria-disabled') === 'true') {
-    await waitFor(() => !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null, 20_000, 'Nút gửi ChatGPT đang bị vô hiệu hóa hoặc tệp đính kèm chưa tải xong.');
+    await waitFor(() => !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null, 20_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
   }
   button.click();
   composer.blur();
@@ -398,7 +398,7 @@ async function reportBrowserCompletion(requestId, assistantContent) {
     if (activeRequest?.id === requestId) activeRequest.resultReported = true;
     return true;
   } catch (error) {
-    if (!globalThis.ChatCmdRuntime.invalidated(error)) console.warn('[ChatCMD bridge] Không thể xác nhận raw bubble với backend.', error);
+    if (!globalThis.ChatCmdRuntime.invalidated(error)) console.warn('[ChatCMD bridge] Unable to confirm the raw bubble with the backend.', error);
     return false;
   }
 }
@@ -419,7 +419,7 @@ async function waitFor(factory, timeoutMs, message) {
   while (Date.now() - startedAt < timeoutMs) {
     const value = factory();
     if (value) return value;
-    if (activeRequest?.stopRequested) throw new Error('Đã dừng theo request người dùng.');
+    if (activeRequest?.stopRequested) throw new Error('Stopped at the user request.');
     await delay(120);
   }
   throw new Error(message);

@@ -243,8 +243,8 @@ function selectedPrompt(agents: Agent[], agentId: string, projectFolder: string,
   const name = agents.find((agent) => agent.id === agentId)?.name || 'agent';
   const folder = projectFolder.trim();
   return folder
-    ? `Sử dụng plugin @${name}\n\nProject folder: ${folder}\n\nđể thực hiện request sau: ${content || '…'}`
-    : `Sử dụng plugin @${name} để thực hiện request sau:\n\n${content || '…'}`;
+    ? `Use plugin @${name}\n\nProject folder: ${folder}\n\nto perform the following request: ${content || '…'}`
+    : `Use plugin @${name} to perform the following request:\n\n${content || '…'}`;
 }
 
 function routeProjectFolder(state: unknown) {

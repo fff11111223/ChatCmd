@@ -57,7 +57,7 @@ async function compactDispatch(tabId, job, record, kind, documentToken) {
   const result = await compactSend(tabId, 'dispatch', job, kind, documentToken);
   if (result.sent === false && result.retryable === true && result.documentToken === documentToken) {
     await saveCompactRecord(job.id, { ...record, [field]: 'not-sent' });
-    await compactDetail(record, job, 'Đang chờ nút Gửi của ChatGPT sẵn sàng. Chưa bấm Gửi; sẽ tiếp tục tự động.');
+    await compactDetail(record, job, 'Waiting for ChatGPT Send button to become ready. Do not click Send; it will continue automatically.');
   }
 }
 async function startCompactJob(message, sender) {
@@ -119,29 +119,29 @@ async function compactTick(id) {
       source = await chrome.tabs.create({ url: job.oldConversationUrl, active: false });
     }
     if (!source?.id) {
-      await compactDetail(record, job, 'Đang chờ mở lại cuộc trò chuyện ChatGPT cũ. Tiến trình đã lưu; không tự gửi lại handoff.');
+      await compactDetail(record, job, 'Waiting to reopen the existing ChatGPT conversation. Progress is saved; do not resubmit the handoff automatically.');
       return;
     }
     record = await saveCompactRecord(id, { ...record, sourceChatTabId: source.id, initialOpenAllowed: false });
     const probe = await compactSend(source.id, 'probe', job, 'HANDOFF');
     if (probe.markerFound) {
-      if (probe.superseded) throw new Error('Có tin nhắn mới sau request handoff. Không lấy phản hồi của lượt khác; hãy hủy và kiểm tra cuộc trò chuyện.');
+      if (probe.superseded) throw new Error('A new message arrived after the handoff request. Do not use a response from another turn; cancel and inspect the conversation.');
       if (probe.handoffText) {
         job = await compactCheckpoint(record, job, { phase: 'saving_handoff', handoffText: probe.handoffText, detail: null });
       } else {
         await compactDetail(record, job, probe.threadError
-          ? 'ChatGPT chưa hoàn tất handoff. Mở tab để kiểm tra lỗi; nội dung và task cũ được giữ nguyên.'
-          : 'Đang chờ ChatGPT viết xong handoff của đúng lượt này. Có thể đóng tab và mở lại sau.');
+          ? 'ChatGPT has not completed the handoff. Open the tab to check; the existing content and task are preserved.'
+          : 'Waiting for ChatGPT to finish the handoff for this turn. You can close the tab and reopen it later.');
         return;
       }
     } else {
       const maySend = (job.phase === 'preparing' && record.sourceSend === 'not-attempted') || record.sourceSend === 'not-sent';
       if (!maySend) {
-        await compactDetail(record, job, 'Đang đối chiếu lần gửi handoff đã ghi nhận. Không tự gửi lần hai khi chưa rõ kết quả; mở lại tab hoặc hủy để kiểm tra.');
+        await compactDetail(record, job, 'Waiting to confirm the recorded handoff submission. Do not submit again while the result is unclear; reopen the tab or cancel to inspect.');
         return;
       }
       const ready = await compactSend(source.id, 'prepare', job, 'HANDOFF', probe.documentToken);
-      if (!ready.ready) { await compactDetail(record, job, 'Đang chuẩn bị: dừng phản hồi hiện tại và chờ ô nhập ChatGPT sẵn sàng.'); return; }
+      if (!ready.ready) { await compactDetail(record, job, 'Preparing: stop the current response and wait for the ChatGPT input box to become ready.'); return; }
       // The server transition is also the cross-document source dispatch permit.
       job = await compactCheckpoint(record, job, { phase: 'writing_handoff', detail: null });
       await compactDispatch(source.id, job, record, 'HANDOFF', probe.documentToken);
@@ -149,7 +149,7 @@ async function compactTick(id) {
     }
   }
   if (job.phase === 'saving_handoff') {
-    if (!job.handoffText) throw new Error('Handoff chưa được lưu bền vững; không mở chat mới.');
+    if (!job.handoffText) throw new Error('Handoff has not been durably saved; do not open a new chat.');
     job = await compactCheckpoint(record, job, { phase: 'opening_new_chat', detail: null });
   }
   if (job.phase === 'opening_new_chat') await compactDestination(job, record, tabs);

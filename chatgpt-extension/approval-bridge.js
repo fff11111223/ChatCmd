@@ -186,11 +186,11 @@ async function resolveGlobalApproval(message) {
   const decision = message?.decision;
   if (!item?.taskId || !item?.kind) throw new Error('Yêu cầu phê duyệt không hợp lệ.');
   if (item.kind === 'conversation') {
-    if (!['allow', 'reject'].includes(decision)) throw new Error('Quyết định phê duyệt đoạn trò chuyện không hợp lệ.');
+    if (!['allow', 'reject'].includes(decision)) throw new Error('Invalid conversation approval decision.');
     await postJson(approvalBaseUrl, `/api/local/tasks/${encodeURIComponent(item.taskId)}/${decision === 'allow' ? 'approve-execution' : 'reject-execution'}`, {});
     approvalItems.delete(conversationApprovalKey(item.taskId));
   } else if (item.kind === 'activity') {
-    if (!item.activityId || !['allow', 'allowSimilar', 'reject'].includes(decision)) throw new Error('Quyết định phê duyệt lệnh không hợp lệ.');
+    if (!item.activityId || !['allow', 'allowSimilar', 'reject'].includes(decision)) throw new Error('Invalid command approval decision.');
     try {
       await postJson(approvalBaseUrl, `/api/local/tasks/${encodeURIComponent(item.taskId)}/activities/${encodeURIComponent(item.activityId)}/approval`, {
         turnId: item.turnId || undefined,
@@ -210,7 +210,7 @@ async function resolveGlobalApproval(message) {
       body = { kind: 'option', optionIndex };
     } else if (message.answerKind === 'custom') {
       const text = String(message.answerText || '').trim();
-      if (!text) throw new Error('Câu trả lời tùy chỉnh không được để trống.');
+      if (!text) throw new Error('Custom answer cannot be empty.');
       body = { kind: 'custom', text };
     } else {
       throw new Error('Kiểu câu trả lời Plan Mode không hợp lệ.');
@@ -218,7 +218,7 @@ async function resolveGlobalApproval(message) {
     await postJson(approvalBaseUrl, `/api/local/plan/questions/${encodeURIComponent(item.questionId)}/answer`, body);
     approvalItems.delete(planQuestionKey(item.questionId));
   } else {
-    throw new Error('Loại phê duyệt không được hỗ trợ.');
+    throw new Error('Unsupported approval type.');
   }
   await broadcastApprovalState();
   return { resolved: true };

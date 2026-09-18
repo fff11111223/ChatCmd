@@ -175,7 +175,7 @@ mod tests {
         std::fs::create_dir_all(&project).expect("create bridge project");
         let project_folder = project.display().to_string();
         let request_id = "bridge-request-project-race";
-        let submitted = "Sử dụng plugin @worker để kiểm tra dự án";
+        let submitted = "Use plugin @worker to inspect the project";
         let now = now_ms();
 
         sqlx::query(
@@ -220,7 +220,7 @@ mod tests {
         let winning_task_id = "task-chatgpt-browser-winner";
         let winning_folder = "D:\\DEV\\winning-project";
         let stale_folder = "D:\\DEV\\stale-project";
-        let submitted = "Sử dụng plugin @worker để kiểm tra race";
+        let submitted = "Use plugin @worker to inspect the race";
         let now = now_ms();
 
         sqlx::query(

@@ -91,7 +91,7 @@ async fn event(
 async fn wait_returns_exact_public_report_and_quality_after_real_child_completion() {
     let (host, parent, registration, id, dir) = fallback_fixture().await;
     let child = begin_child(&host, &parent, &registration).await;
-    let text = "src/a.rs: chịu trách nhiệm đọc dữ liệu; symbols: read_a.\n\nsrc/b.rs: kiểm tra đường dẫn; symbols: validate_b.\nKhông sửa file. 🦀";
+    let text = "src/a.rs: responsible for reading data; symbols: read_a.\\n\\nsrc/b.rs: validates the path; symbols: validate_b.\\nDo not modify files. 🦀";
     finish(&host, &child, text, "completed").await;
     let result = wait(&host, &parent, json!({"timeoutMs":250})).await;
     let report = &run(&result, &id)["report"];
