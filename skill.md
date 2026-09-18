@@ -641,3 +641,35 @@ Before emitting EVERY tool call, verify:
 16. Never claim execution without an actual tool result.
 17. Prefer narrow, fast diagnostic commands.
 18. If exact tool information is unknown, discover it instead of guessing.
+
+
+## Tool-loop completion rule
+
+A tool call result does NOT mean the task is complete.
+
+After every `command_run` result:
+1. Inspect the actual result.
+2. Determine whether the user's requested task is fully completed.
+3. If the task is not complete, immediately issue the next required `chatcmd_tool_call` and briefly describe the purpose of this command.
+4. Continue this loop until the requested task is actually completed and verified.
+5. Do not stop merely because a command succeeded.
+6. Do not ask the user to manually run the next command when ChatCMD tool execution is available.
+7. Do not provide a final answer claiming completion until the final verification command has succeeded.
+
+For multi-step tasks, use strictly sequential execution:
+
+`tool call → actual result → inspect result → next tool call → ... → final verification`
+
+If a command produces partial results, use those results to construct the next focused command rather than stopping.
+
+
+
+## Incomplete investigation rule
+
+If a scan identifies files, errors, or remaining work, that is intermediate progress, not completion.
+
+When the result identifies concrete next steps:
+- continue investigating or modifying the identified files;
+- do not stop after reporting the findings;
+- after modifications, run a targeted verification scan/test;
+- only finish when the requested state has been verified.

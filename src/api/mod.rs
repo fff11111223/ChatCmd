@@ -1,6 +1,7 @@
 mod agents;
 mod auth;
 mod chatgpt;
+mod chatgpt_browser_tools;
 mod chatgpt_compact;
 #[cfg(test)]
 mod chatgpt_compact_guard_tests;
@@ -15,7 +16,6 @@ mod chatgpt_compact_test_support;
 mod chatgpt_compact_tests;
 #[cfg(test)]
 mod chatgpt_compact_work_tests;
-mod chatgpt_browser_tools;
 mod chatgpt_completion;
 mod chatgpt_native;
 #[cfg(test)]
@@ -30,8 +30,8 @@ mod chatgpt_router_tests;
 mod chatgpt_support;
 #[cfg(test)]
 mod chatgpt_tests;
-mod data;
 mod custom_fonts;
+mod data;
 mod folders;
 mod overview;
 mod plan_questions;

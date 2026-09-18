@@ -27,6 +27,57 @@ const BLOCKED_TOOLS: &[&str] = &[
 
 /// Maximum byte length of a call_id to guard against absurdly large values.
 const MAX_CALL_ID_BYTES: usize = 240;
+/// Maximum command output size returned to the AI through the browser bridge.
+/// This does not change command execution or persisted results.
+const MAX_AI_COMMAND_RESULT_BYTES: usize = 64 * 1024;
+
+fn guard_command_run_result_for_ai(tool: &str, value: Value) -> Value {
+    if tool != "command_run" {
+        return value;
+    }
+
+    let object = match value.as_object() {
+        Some(object) => object,
+        None => return value,
+    };
+
+    let stdout_bytes = object
+        .get("stdoutBytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| {
+            object
+                .get("stdout")
+                .and_then(Value::as_str)
+                .map_or(0, |s| s.len() as u64)
+        });
+    let stderr_bytes = object
+        .get("stderrBytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| {
+            object
+                .get("stderr")
+                .and_then(Value::as_str)
+                .map_or(0, |s| s.len() as u64)
+        });
+    let output_bytes = stdout_bytes.saturating_add(stderr_bytes);
+
+    if output_bytes <= MAX_AI_COMMAND_RESULT_BYTES as u64 {
+        return value;
+    }
+
+    json!({
+        "resultTooLarge": true,
+        "originalStdoutBytes": stdout_bytes,
+        "originalStderrBytes": stderr_bytes,
+        "originalOutputBytes": output_bytes,
+        "maxAiResultBytes": MAX_AI_COMMAND_RESULT_BYTES,
+        "executionId": object.get("executionId").cloned().unwrap_or(Value::Null),
+        "exitCode": object.get("exitCode").cloned().unwrap_or(Value::Null),
+        "terminalState": object.get("terminalState").cloned().unwrap_or(Value::Null),
+        "truncated": object.get("truncated").cloned().unwrap_or(Value::Null),
+        "warning": "The command_run result was too large to return in full. Do not request the complete output. Use Select-String, Select-Object -First/-Last, split the output into chunks, or specify file/line ranges, then issue another command_run. An oversized result does NOT mean the task is complete. You MUST continue with another command_run."
+    })
+}
 
 /// Body sent by `content-chatgpt-tool-bridge.js` for each tool call.
 ///
@@ -151,7 +202,10 @@ pub(super) async fn browser_tool_call(
 
     if let Some(payload_json) = existing_result {
         let stored: Value = serde_json::from_str(&payload_json).unwrap_or(Value::Null);
-        let result_content = stored.get("content").cloned().unwrap_or(Value::Null);
+        let result_content = guard_command_run_result_for_ai(
+            tool,
+            stored.get("content").cloned().unwrap_or(Value::Null),
+        );
         return Ok(Json(json!({
             "ok": true,
             "idempotent": true,
@@ -211,7 +265,7 @@ pub(super) async fn browser_tool_call(
             "taskId": task_id,
             "turnId": turn_id,
             "tool": tool,
-            "result": value,
+            "result": guard_command_run_result_for_ai(tool, value),
         }))),
 
         Err(error) => Ok(Json(json!({
