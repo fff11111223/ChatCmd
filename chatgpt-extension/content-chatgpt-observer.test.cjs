@@ -183,3 +183,23 @@ test('flush can publish an already scanned revision without rescanning the DOM',
   assert.equal(await capture.flush(false, false), false);
   assert.equal(queries, afterScan);
 });
+
+test('binds tool result turn even when ChatGPT renders as a markdown code block without backticks', async (t) => {
+  const env = setup(t, user('old-user', 'Previous prompt') + assistant('old-assistant', '<div class="markdown">First response</div>'));
+  const toolResult = '```chatcmd_tool_result\n{"id":"call_999","tool":"command_run","ok":true,"content":"{\\"stdout\\":\\"hello\\"}"}\n```';
+  const capture = env.window.ChatCmdObserver.create('request-tool', toolResult);
+  t.after(() => capture.stop());
+  await capture.bind();
+  assert.equal(capture.userMessageId, null);
+
+  // ChatGPT renders user bubble with code block
+  env.add(`<section data-testid="conversation-turn-user-tool"><div data-message-author-role="user" data-message-id="user-tool"><pre><code class="language-chatcmd_tool_result">{"id":"call_999","tool":"command_run","ok":true,"content":"{\\"stdout\\":\\"hello\\"}"}</code></pre></div></section>`);
+  capture.scan();
+  assert.equal(capture.userMessageId, 'user-tool');
+
+  // Next assistant response appears
+  env.add(assistant('new-assistant', '<div class="markdown"><p>Second turn response</p></div>'));
+  await capture.flush();
+  assert.equal(capture.hasTurn, true);
+  assert.equal(capture.answer, 'Second turn response');
+});

@@ -1,10 +1,6 @@
 (() => {
-const AUTO_RETRY_ENABLED = false;
-const MAX_AUTO_RETRIES = 2;
-const RAW_BUBBLE_STABILITY_MS = 1_200;
-const SILENT_RETRY_GRACE_MS = 8_000;
-const ERROR_INTERRUPT_GRACE_MS = 2_500;
-const COMPLETION_PING_INTERVAL_MS = 1_000;
+const AUTO_RETRY_ENABLED = false, MAX_AUTO_RETRIES = 2, RAW_BUBBLE_STABILITY_MS = 1_200;
+const SILENT_RETRY_GRACE_MS = 8_000, ERROR_INTERRUPT_GRACE_MS = 2_500, COMPLETION_PING_INTERVAL_MS = 1_000;
 const INTERRUPTED_PROGRESS_PROMPT = 'Tôi vừa bị gián đoạn kết nối. Vui lòng kiểm tra trạng thái công việc ở lượt trước. Nếu chưa hoàn tất, hãy tiếp tục từ trạng thái hiện tại và hoàn thành phần còn lại; không làm lại những phần đã xong. Nếu đã hoàn tất, hãy trả lại kết quả cuối.';
 const {
   assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError,
@@ -16,12 +12,9 @@ let reconcileScheduled = false;
 const waitForAssistant = globalThis.ChatCmdMonitor.create({
   get activeRequest() { return activeRequest; },
   AUTO_RETRY_ENABLED, MAX_AUTO_RETRIES, RAW_BUBBLE_STABILITY_MS, SILENT_RETRY_GRACE_MS, ERROR_INTERRUPT_GRACE_MS, COMPLETION_PING_INTERVAL_MS, INTERRUPTED_PROGRESS_PROMPT,
-  requestState: (...args) => requestState(...args),
-  findComposer: (...args) => findComposer(...args),
-  reportBrowserCompletion: (...args) => reportBrowserCompletion(...args),
-  retryPrompt: (...args) => retryPrompt(...args),
-  unknownRequestState: (...args) => unknownRequestState(...args),
-  isTerminalRequestState: (...args) => isTerminalRequestState(...args),
+  requestState: (...args) => requestState(...args), findComposer: (...args) => findComposer(...args),
+  reportBrowserCompletion: (...args) => reportBrowserCompletion(...args), retryPrompt: (...args) => retryPrompt(...args),
+  unknownRequestState: (...args) => unknownRequestState(...args), isTerminalRequestState: (...args) => isTerminalRequestState(...args),
   delay: (...args) => delay(...args)
 });
 
@@ -133,30 +126,8 @@ async function runRequest(message) {
       conversationUrl = finalIdentity.conversationUrl;
     }
 
-    let currentResult = result;
-    while (globalThis.ChatCmdToolBridge?.hasPendingToolCalls(currentResult)) {
-      const assistantCount = assistantNodes().length;
-      let submittedReply = '';
-      const bridgeSubmit = async (replyText) => {
-        const composer = findComposer();
-        if (!composer) throw new Error('Không tìm thấy ô nhập ChatGPT để gửi kết quả tool.');
-        submittedReply = replyText;
-        setComposerText(composer, replyText);
-        await submitPrompt(composer);
-      };
-      const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(message.requestId, currentResult, bridgeSubmit);
-      if (!dispatched || requestObservationLost(owner)) return;
-      globalThis.ChatCmdToolBridge?.reset?.();
-      if (owner) {
-        owner.observer?.finish?.();
-        owner.observer = globalThis.ChatCmdObserver?.create(message.requestId, submittedReply, {
-          current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
-        });
-        await owner?.observer?.bind();
-      }
-      currentResult = await waitForAssistant(assistantCount, message.requestId, submittedReply);
-      if (requestObservationLost(owner)) return;
-    }
+    const currentResult = await executeToolLoop(owner, message.requestId, result);
+    if (requestObservationLost(owner)) return;
     await reportRequestResult({
       requestId: message.requestId,
       status: activeRequest?.id === message.requestId && activeRequest.stopRequested ? 'stopped' : 'completed',
@@ -463,6 +434,33 @@ function renderReturnToChatCmd(enabled) { globalThis.ChatCmdConversationUi?.rend
 function delay(ms) { return globalThis.ChatCmdCaptureClock?.sleep(ms) ?? new Promise((resolve) => setTimeout(resolve, ms)); }
 function errorMessage(error) { return error instanceof Error ? error.message : String(error || 'Lỗi khi thao tác ChatGPT.'); }
 
+async function executeToolLoop(owner, requestId, initialResult) {
+  let currentResult = initialResult;
+  while (globalThis.ChatCmdToolBridge?.hasPendingToolCalls(currentResult)) {
+    const assistantCount = assistantNodes().length;
+    let submittedReply = '';
+    const bridgeSubmit = async (replyText) => {
+      const composer = await waitForComposer();
+      submittedReply = replyText;
+      if (owner) {
+        owner.observer?.finish?.();
+        owner.observer = globalThis.ChatCmdObserver?.create(requestId, replyText, {
+          current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
+        });
+        await owner?.observer?.bind();
+      }
+      setComposerText(composer, replyText);
+      await submitPrompt(composer);
+    };
+    const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(requestId, currentResult, bridgeSubmit);
+    if (!dispatched || requestObservationLost(owner)) return currentResult;
+    globalThis.ChatCmdToolBridge?.reset?.();
+    currentResult = await waitForAssistant(assistantCount, requestId, submittedReply);
+    if (requestObservationLost(owner)) return currentResult;
+  }
+  return currentResult;
+}
+
 async function adoptObservedRequest(request, user = null) {
   if (activeRequest || !globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT)) return;
   const owner = { id: request.id, stopRequested: request.status === 'stop_requested', resultReported: false, retryCount: 0, startedAt: Date.now() };
@@ -475,8 +473,10 @@ async function adoptObservedRequest(request, user = null) {
     await owner.observer?.bind();
     const result = await waitForAssistant(0, request.id, request.submittedContent);
     if (requestObservationLost(owner)) return;
+    const currentResult = await executeToolLoop(owner, request.id, result);
+    if (requestObservationLost(owner)) return;
     const identity = currentConversationIdentity();
-    await reportRequestResult({ requestId: request.id, status: owner.stopRequested ? 'stopped' : 'completed', conversationId: identity?.conversationId, conversationUrl: identity?.conversationUrl, assistantContent: result });
+    await reportRequestResult({ requestId: request.id, status: owner.stopRequested ? 'stopped' : 'completed', conversationId: identity?.conversationId, conversationUrl: identity?.conversationUrl, assistantContent: currentResult });
   } catch (error) {
     globalThis.ChatCmdCaptureStatus?.report('error', errorMessage(error));
   } finally {

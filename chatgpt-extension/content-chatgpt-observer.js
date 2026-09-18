@@ -5,6 +5,18 @@
     try { return JSON.parse(sessionStorage.getItem(STORAGE_PREFIX + requestId) || 'null'); }
     catch { return null; }
   }
+  function matchesSubmitted(dom, targetText, expectedContent) {
+    const normTarget = dom.normalize(targetText);
+    const normExpected = dom.normalize(expectedContent);
+    if (normTarget === normExpected) return true;
+    if (expectedContent.includes('chatcmd_tool_result')) {
+      const stripped = dom.normalize(expectedContent.replace(/`{3,}(?:chatcmd_tool_result)?/g, ''));
+      if (normTarget === stripped || normTarget.includes(stripped) || stripped.includes(normTarget)) return true;
+      const idMatch = expectedContent.match(/"id"\s*:\s*"([^"]+)"/);
+      if (idMatch && normTarget.includes(idMatch[1])) return true;
+    }
+    return false;
+  }
   function create(requestId, submittedContent, { resumed = false, user = null, current = () => true } = {}) {
     const dom = globalThis.ChatCmdTranscript;
     if (!dom || requestId.startsWith('subagent:')) return null;
@@ -43,13 +55,14 @@
       const user = dom.latestUser();
       if (!user) return;
       if (!userId) {
-        if ((!resumed && user.id === baseline) || user.text !== dom.normalize(submittedContent)) return;
+        const isTool = submittedContent.includes('chatcmd_tool_result');
+        if ((!resumed && !isTool && user.id === baseline) || !matchesSubmitted(dom, user.text, submittedContent)) return;
         userId = user.id;
         userNode = user.node;
         checkpoint();
       }
       if (user.id !== userId) {
-        if (user.node === userNode && user.text === dom.normalize(submittedContent) && user.node.isConnected) {
+        if (user.node === userNode && matchesSubmitted(dom, user.text, submittedContent) && user.node.isConnected) {
           userId = user.id;
           checkpoint();
         } else {

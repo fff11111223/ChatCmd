@@ -348,8 +348,16 @@ fn resolve_frontend_dir() -> PathBuf {
     if let Ok(executable) = std::env::current_exe()
         && let Some(executable_dir) = executable.parent()
     {
-        for candidate in [executable_dir.join("web/dist"), executable_dir.join("dist")] {
+        for candidate in [
+            executable_dir.join("web/dist"),
+            executable_dir.join("dist"),
+            executable_dir.join("../../web/dist"),
+            executable_dir.join("../web/dist"),
+        ] {
             if candidate.join("index.html").is_file() {
+                if let Ok(canonical) = candidate.canonicalize() {
+                    return canonical;
+                }
                 return candidate;
             }
         }

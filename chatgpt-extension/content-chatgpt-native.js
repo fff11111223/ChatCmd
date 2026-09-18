@@ -40,6 +40,7 @@
     const key = keyFor(user);
     if (!key || !user.content.trim()) return;
     if (globalThis.ChatCmdCompact?.busy || globalThis.ChatCmdCompactProtocol?.parse(user.content)) return;
+    if (user.content.includes('chatcmd_tool_result') || (user.content.includes('"tool"') && user.content.includes('"id"'))) { remember(key); return; }
     if (controller.active) {
       if (controller.active.observer?.userMessageId === user.id && controller.active.observer.active) remember(key);
       else if (controller.active.observer?.userMessageId) retry(500);

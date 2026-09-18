@@ -50,6 +50,14 @@
 
 ### 1. 編譯並啟動 ChatCMD
 
+###連前端一起重新 build
+cd D:\frank\gemini\ChatCmd\web
+npm.cmd run build
+
+cd ..
+cargo build --release
+
+
 ```bash
 cargo build --release
 ./target/release/chat-cmd-client
