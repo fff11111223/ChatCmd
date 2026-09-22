@@ -137,6 +137,8 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tasks/{id}", get(task).delete(delete_task))
         .route("/tasks/{id}/activities/{activity_id}", get(task_activity))
         .route("/tasks/{id}/title", axum::routing::put(set_task_title))
+        .route("/tasks/{id}/project-folder", axum::routing::put(set_task_project_folder))
+
         .route(
             "/tasks/{id}/command-execution-mode",
             get(task_execution_mode).put(set_task_execution_mode),

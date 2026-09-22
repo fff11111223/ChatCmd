@@ -74,6 +74,8 @@ export function FunctionRail({ taskRailCollapsed, onTaskRailToggle }: { taskRail
 export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; onClose: () => void; onDesktopCollapse: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const taskId = activeTaskId(location.pathname);
   const [loadedTasks, setLoadedTasks] = useState<Task[]>([]); const [nextCursor, setNextCursor] = useState<string>(); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false); const [error, setError] = useState(''); const [query, setQuery] = useState(''); const [contextMenu, setContextMenu] = useState<{ task: Task; x: number; y: number }>(); const [deleteTarget, setDeleteTarget] = useState<Task>(); const [deleting, setDeleting] = useState(false); const [deleteError, setDeleteError] = useState('');
+  const [showMoveMenu, setShowMoveMenu] = useState(false); const [movingToProject, setMovingToProject] = useState(false); const [moveError, setMoveError] = useState('');
+
   const [readFinalCounts, setReadFinalCounts] = useState<Record<string, number>>(readStoredFinalCounts);
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [draggedProjectId, setDraggedProjectId] = useState<string>(); const [dragOverProjectId, setDragOverProjectId] = useState<string>();
@@ -112,8 +114,9 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
   useRealtime(handleRealtime);
   useEffect(() => { try { localStorage.setItem(READ_FINAL_COUNTS_KEY, JSON.stringify(readFinalCounts)); } catch { /* unavailable */ } }, [readFinalCounts]);
   useEffect(() => { if (!taskId) return; const task = loadedTasks.find((item) => item.id === taskId); if (!task) return; const count = task.finalResponseCount ?? 0; setReadFinalCounts((current) => (current[taskId] ?? 0) >= count ? current : { ...current, [taskId]: count }); }, [taskId, loadedTasks]);
-  useEffect(() => { setContextMenu(undefined); setProjectContextMenu(undefined); onClose(); }, [location.pathname, onClose]);
-  useEffect(() => { if (!contextMenu && !projectContextMenu) return; const close = () => { setContextMenu(undefined); setProjectContextMenu(undefined); }; window.addEventListener('pointerdown', close); window.addEventListener('blur', close); return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('blur', close); }; }, [contextMenu, projectContextMenu]);
+  useEffect(() => { setContextMenu(undefined); setProjectContextMenu(undefined); setShowMoveMenu(false); setMoveError(''); onClose(); }, [location.pathname, onClose]);
+  useEffect(() => { if (!contextMenu && !projectContextMenu) return; const close = () => { setContextMenu(undefined); setProjectContextMenu(undefined); setShowMoveMenu(false); setMoveError(''); }; window.addEventListener('pointerdown', close); window.addEventListener('blur', close); return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('blur', close); }; }, [contextMenu, projectContextMenu]);
+
   const deleteConversation = useCallback(async () => {
     if (!deleteTarget || !canDeleteTask(deleteTarget)) return; setDeleting(true); setDeleteError('');
     try { await api.deleteTask(deleteTarget.id); setLoadedTasks((current) => current.filter((task) => task.id !== deleteTarget.id)); setReadFinalCounts((current) => { const next = { ...current }; delete next[deleteTarget.id]; return next; }); if (taskId === deleteTarget.id) navigate('/tasks'); setDeleteTarget(undefined); }
@@ -241,7 +244,29 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
         {error && <button className="task-rail-load-retry" type="button" onClick={() => void loadMore()}>{tr('Reload')}</button>}
       </>}
     </div></div>
-    {contextMenu && <div className="task-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" className="danger" disabled={!canDeleteTask(contextMenu.task)} onClick={() => { setDeleteError(''); setDeleteTarget(contextMenu.task); setContextMenu(undefined); }}><Trash2 /><span>{tr('Delete conversation')}</span></button>{!canDeleteTask(contextMenu.task) && <small>{tr('You can only delete a task after it has finished.')}</small>}</div>}
+    {contextMenu && <div className="task-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+      <button type="button" role="menuitem" disabled={movingToProject} onClick={() => { setShowMoveMenu((prev) => !prev); setMoveError(''); }}><FolderOpen /><span>{tr('Move to project…')}</span></button>
+      {showMoveMenu && <div className="task-context-submenu">
+        {projects.map((project) => (
+          <button key={project.id} type="button" role="menuitem" disabled={movingToProject} onClick={async () => {
+            setMovingToProject(true); setMoveError('');
+            try { const result = await api.setTaskProjectFolder(contextMenu.task.id, project.path); setLoadedTasks((current) => current.map((t) => t.id === result.task.id ? { ...t, ...result.task } : t)); setContextMenu(undefined); setShowMoveMenu(false); }
+            catch (value) { setMoveError(value instanceof Error ? value.message : tr('Could not move conversation.')); }
+            finally { setMovingToProject(false); }
+          }}><span>{project.name}</span><small>{project.path}</small></button>
+        ))}
+        <button type="button" role="menuitem" disabled={movingToProject} onClick={async () => {
+          setMovingToProject(true); setMoveError('');
+          try { const result = await api.setTaskProjectFolder(contextMenu.task.id, null); setLoadedTasks((current) => current.map((t) => t.id === result.task.id ? { ...t, ...result.task } : t)); setContextMenu(undefined); setShowMoveMenu(false); }
+          catch (value) { setMoveError(value instanceof Error ? value.message : tr('Could not move conversation.')); }
+          finally { setMovingToProject(false); }
+        }}><span>{tr('Unclassified')}</span><small>{tr('Remove from project')}</small></button>
+        {moveError && <small className="task-delete-error">{moveError}</small>}
+      </div>}
+      <button type="button" role="menuitem" className="danger" disabled={!canDeleteTask(contextMenu.task)} onClick={() => { setDeleteError(''); setDeleteTarget(contextMenu.task); setContextMenu(undefined); }}><Trash2 /><span>{tr('Delete conversation')}</span></button>
+      {!canDeleteTask(contextMenu.task) && <small>{tr('You can only delete a task after it has finished.')}</small>}
+    </div>}
+
     {projectContextMenu && <div className="task-context-menu" role="menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { const project = projectContextMenu.project; setProjectContextMenu(undefined); openProjectModal(project); }}><Pencil /><span>{tr('Edit project')}</span></button><button type="button" role="menuitem" className="danger" onClick={() => { setDeleteProjectError(''); setDeleteProjectTarget(projectContextMenu.project); setProjectContextMenu(undefined); }}><Trash2 /><span>{tr('Delete project')}</span></button></div>}
     {deleteTarget && <Modal title={tr('Delete conversation?')} description={conversationName(deleteTarget)} close={() => !deleting && setDeleteTarget(undefined)} dangerous><div className="task-delete-warning"><AlertTriangle /><div><strong>{tr('Warning')}</strong><p>{tr('Deleting removes this conversation and its linked data from the list. This conversation may not work again in the future.')}</p></div></div>{deleteError && <p className="task-delete-error" role="alert">{deleteError}</p>}<div className="modal-actions"><button className="button secondary" type="button" disabled={deleting} onClick={() => setDeleteTarget(undefined)}>{tr('Cancel')}</button><button className="button danger" type="button" disabled={deleting} onClick={() => void deleteConversation()}>{deleting ? tr('Deleting…') : tr('Delete conversation')}</button></div></Modal>}
     {deleteProjectTarget && <Modal title={tr('Delete project?')} description={deleteProjectTarget.name} close={() => !deletingProject && setDeleteProjectTarget(undefined)} dangerous><div className="task-delete-warning"><AlertTriangle /><div><strong>{tr('The entire project will be deleted')}</strong><p>{tr('Completed conversations in this project will also be deleted. Unfinished conversations will be kept and moved to “Unclassified”.')}</p></div></div>{deleteProjectError && <p className="task-delete-error" role="alert">{deleteProjectError}</p>}<div className="modal-actions"><button className="button secondary" type="button" disabled={deletingProject} onClick={() => setDeleteProjectTarget(undefined)}>{tr('Cancel')}</button><button className="button danger" type="button" disabled={deletingProject} onClick={() => void deleteProject()}>{deletingProject ? tr('Deleting…') : tr('Delete project')}</button></div></Modal>}

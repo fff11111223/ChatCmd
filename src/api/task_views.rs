@@ -344,6 +344,37 @@ pub(super) async fn set_task_title(
     task_detail(&state, &id).await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TaskProjectFolderInput {
+    project_folder: Option<String>,
+}
+
+pub(super) async fn set_task_project_folder(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(input): Json<TaskProjectFolderInput>,
+) -> Result<Json<Value>, Problem> {
+    let project_folder = input.project_folder.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let affected = sqlx::query("UPDATE tasks SET project_folder=? WHERE id=?")
+        .bind(project_folder)
+        .bind(&id)
+        .execute(state.repository.pool())
+        .await
+        .map_err(db_problem)?
+        .rows_affected();
+    if affected == 0 {
+        return Err(not_found());
+    }
+    let mut event = AppEvent::new(
+        "conversation.project_folder_updated",
+        json!({ "projectFolder": project_folder }),
+    );
+    event.task_id = Some(id.clone());
+    state.publish(event);
+    task_detail(&state, &id).await
+}
+
 pub(super) async fn task_action(
     State(state): State<Arc<AppState>>,
     Path((id, action)): Path<(String, String)>,
