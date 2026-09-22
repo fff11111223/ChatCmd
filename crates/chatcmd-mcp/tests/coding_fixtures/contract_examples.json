@@ -17,8 +17,8 @@
     "previewOnly": true
   },
   "executionConsent": {
-    "question": "Bạn có muốn thực hiện kế hoạch không?",
-    "options": ["Có", "Không"],
+    "question": "Do you want to execute the plan?",
+    "options": ["Yes", "No"],
     "questionKind": "executionConsent"
   },
   "completion": {

@@ -184,7 +184,7 @@ async function approvalBridgeState() {
 async function resolveGlobalApproval(message) {
   const item = message?.item;
   const decision = message?.decision;
-  if (!item?.taskId || !item?.kind) throw new Error('Yêu cầu phê duyệt không hợp lệ.');
+  if (!item?.taskId || !item?.kind) throw new Error('Invalid approval request.');
   if (item.kind === 'conversation') {
     if (!['allow', 'reject'].includes(decision)) throw new Error('Invalid conversation approval decision.');
     await postJson(approvalBaseUrl, `/api/local/tasks/${encodeURIComponent(item.taskId)}/${decision === 'allow' ? 'approve-execution' : 'reject-execution'}`, {});
@@ -202,18 +202,18 @@ async function resolveGlobalApproval(message) {
     }
     approvalItems.delete(activityApprovalKey(item.taskId, item.activityId));
   } else if (item.kind === 'plan') {
-    if (!item.questionId) throw new Error('Thiếu question ID của Plan Mode.');
+    if (!item.questionId) throw new Error('Missing Plan Mode question ID.');
     let body;
     if (message.answerKind === 'option') {
       const optionIndex = Number(message.optionIndex);
-      if (optionIndex !== 1 && optionIndex !== 2) throw new Error('Lựa chọn Plan Mode không hợp lệ.');
+      if (optionIndex !== 1 && optionIndex !== 2) throw new Error('Invalid Plan Mode option.');
       body = { kind: 'option', optionIndex };
     } else if (message.answerKind === 'custom') {
       const text = String(message.answerText || '').trim();
       if (!text) throw new Error('Custom answer cannot be empty.');
       body = { kind: 'custom', text };
     } else {
-      throw new Error('Kiểu câu trả lời Plan Mode không hợp lệ.');
+      throw new Error('Invalid Plan Mode response type.');
     }
     await postJson(approvalBaseUrl, `/api/local/plan/questions/${encodeURIComponent(item.questionId)}/answer`, body);
     approvalItems.delete(planQuestionKey(item.questionId));

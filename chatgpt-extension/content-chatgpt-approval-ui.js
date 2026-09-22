@@ -107,7 +107,7 @@
             ${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}
           </div>
           <footer class="actions">
-            ${current.kind === 'plan' ? '<button class="primary" data-action="plan-custom">Gửi câu trả lời khác</button>' : rejecting ? '<button class="secondary" data-action="cancel-reject">Quay lại</button><button class="danger" data-action="confirm-reject">Xác nhận từ chối</button>' : `<button class="danger" data-action="reject">Từ chối</button>${current.kind === 'activity' ? '<button class="similar" data-action="allowSimilar">Cho phép tương tự</button>' : ''}<button class="primary" data-action="allow">Phê duyệt</button>`}
+            ${current.kind === 'plan' ? '<button class="primary" data-action="plan-custom">Give another answer</button>' : rejecting ? '<button class="secondary" data-action="cancel-reject">Back</button><button class="danger" data-action="confirm-reject">Confirm rejection</button>' : `<button class="danger" data-action="reject">Reject</button>${current.kind === 'activity' ? '<button class="similar" data-action="allowSimilar">Allow similar</button>' : ''}<button class="primary" data-action="allow">Approve</button>`}
           </footer>
         </section>
       </div>
@@ -152,7 +152,7 @@
         if (action === 'plan-option-1' || action === 'plan-option-2') {
           payload = { type: 'chatcmd-approval-decision', item: current, answerKind: 'option', optionIndex: action.endsWith('1') ? 1 : 2 };
         } else if (action === 'plan-custom') {
-          if (!reason.trim()) throw new Error('Nhập câu trả lời khác trước khi gửi.');
+          if (!reason.trim()) throw new Error('Please enter another answer before sending.');
           payload = { type: 'chatcmd-approval-decision', item: current, answerKind: 'custom', answerText: reason.trim() };
         }
       }

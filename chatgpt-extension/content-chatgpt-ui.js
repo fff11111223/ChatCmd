@@ -8,12 +8,12 @@
     const button = document.createElement('button');
     button.id = id;
     button.type = 'button';
-    button.setAttribute('aria-label', 'Quay lại ChatCMD');
-    button.title = 'Quay lại ChatCMD';
+    button.setAttribute('aria-label', 'Back to ChatCMD');
+    button.title = 'Back to ChatCMD';
     button.innerHTML = `
       <span data-chatcmd-return-icon aria-hidden="true">↩</span>
       <span data-chatcmd-return-copy>
-        <strong>Quay lại ChatCMD</strong>
+        <strong>Back to ChatCMD</strong>
         <small>Click to return</small>
       </span>
       <i data-chatcmd-return-dot aria-hidden="true"></i>

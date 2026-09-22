@@ -28,7 +28,7 @@ async function handleNativeTurn(message, sender) {
         `ChatCMD capture capabilities failed: ${errorMessage(error)}`
       );
     }
-    if (capabilities?.provider !== 'chatcmd' || capabilities.captureProtocol !== 2) throw new Error('ChatCMD capture protocol không tương thích; cần cập nhật ứng dụng.');
+    if (capabilities?.provider !== 'chatcmd' || capabilities.captureProtocol !== 2) throw new Error('ChatCMD capture protocol is incompatible; please update the application.');
     captureCapabilities.set(localBaseUrl, Date.now());
   }
   const request = await postJson(localBaseUrl, '/api/local/chatgpt/capture/turns', {

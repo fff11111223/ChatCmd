@@ -135,7 +135,7 @@ test('a superseded request monitor exits instead of touching the newer request',
 test('automatic retry is temporarily disabled when no progress was observed', async () => {
   const context = loadBridge();
   prepareMonitor(context, { known: true, running: true, stopRequested: false, hasFinalResponse: false, active: true }, { text: '' });
-  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'ORIGINAL PROMPT')", context), /Quá lâu/i);
+  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'ORIGINAL PROMPT')", context), /Timed out/i);
   assert.equal(context.__submitCalls, 0);
   assert.deepEqual(Array.from(context.__composerWrites), []);
 });
@@ -144,7 +144,7 @@ test('an interruption after execution progress does not send a continuation prom
   const context = loadBridge();
   prepareMonitor(context, { known: true, running: true, stopRequested: false, hasFinalResponse: false, active: true }, { text: '', threadError: true });
   context.__stopButton = () => context.__now < 3_000 ? {} : null;
-  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'ORIGINAL PROMPT')", context), /Quá lâu/i);
+  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'ORIGINAL PROMPT')", context), /Timed out/i);
   assert.equal(context.__submitCalls, 0);
   assert.equal(context.__composerWrites.length, 0);
 });
@@ -152,21 +152,21 @@ test('an interruption after execution progress does not send a continuation prom
 test('partial assistant text followed by an error does not send the continuation prompt while retry is disabled', async () => {
   const context = loadBridge();
   prepareMonitor(context, { known: true, running: true, stopRequested: false, hasFinalResponse: false, active: true }, { text: 'Partially fixed', threadError: true });
-  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'ORIGINAL PROMPT')", context), /Quá lâu/i);
+  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'ORIGINAL PROMPT')", context), /Timed out/i);
   assert.equal(context.__composerWrites.length, 0);
 });
 
 test('a ChatGPT error does not retry while automatic retry is disabled', async () => {
   const context = loadBridge();
   prepareMonitor(context, { known: true, running: true, stopRequested: false, hasFinalResponse: false, active: true }, { text: '', threadError: true });
-  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'RETRY ME')", context), /Quá lâu/i);
+  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'RETRY ME')", context), /Timed out/i);
   assert.equal(context.__submitCalls, 0);
 });
 
 test('unknown backend state never authorizes an automatic resend', async () => {
   const context = loadBridge(() => Promise.resolve({ ok: false, error: 'offline' }));
   prepareMonitor(context, { known: false, running: null, stopRequested: false, hasFinalResponse: false, active: null }, { text: '', sendReady: false });
-  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'DO NOT RETRY')", context), /Quá lâu/);
+  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'DO NOT RETRY')", context), /Timed out/);
   assert.equal(context.__submitCalls, 0);
 });
 
@@ -187,7 +187,7 @@ test('a failed completion ping never turns an existing raw bubble into a resend'
   const context = loadBridge();
   context.__completionResponse = { ok: false, error: 'backend unavailable' };
   prepareMonitor(context, { known: true, running: true, stopRequested: false, hasFinalResponse: false, active: true });
-  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'NEVER DUPLICATE')", context), /Quá lâu/);
+  await assert.rejects(vm.runInContext("waitForAssistant(0, 'request-1', 'NEVER DUPLICATE')", context), /Timed out/);
   assert.ok(context.__completionPings > 1);
   assert.equal(context.__submitCalls, 0);
 });
@@ -219,7 +219,7 @@ test('Vietnamese stop controls are detected by the shared DOM helper', () => {
     getBoundingClientRect() { return { width: 10, height: 10 }; }
     querySelectorAll() { return []; }
   }
-  for (const label of ['Dừng tạo phản hồi', 'Ngừng tạo']) {
+   for (const label of ['Stop generating', 'Stop generating']) {
     const button = new FakeElement(label);
     const context = {
       Element: FakeElement,
@@ -242,7 +242,7 @@ test('a stop-like button outside the unified composer does not mark ChatGPT as g
     querySelectorAll() { return []; }
   }
   const composer = new FakeElement();
-  const outsideStop = new FakeElement('Dừng chia sẻ màn hình');
+   const outsideStop = new FakeElement('Stop screen sharing');
   const context = {
     Element: FakeElement,
     Node: { DOCUMENT_POSITION_FOLLOWING: 4 },
@@ -250,7 +250,7 @@ test('a stop-like button outside the unified composer does not mark ChatGPT as g
     document: {
       querySelectorAll(selector) {
         if (selector === 'form[data-type="unified-composer"]') return [composer];
-        if (selector === 'button' || selector.includes('Dừng')) return [outsideStop];
+         if (selector === 'button' || selector.includes('Stop')) return [outsideStop];
         return [];
       },
     },

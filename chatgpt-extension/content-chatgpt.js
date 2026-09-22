@@ -28,7 +28,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'chatcmd-chatgpt-run') {
     const composer = findComposer();
     if (!composer || findStopButton() || globalThis.ChatCmdCompact?.busy) {
-      sendResponse({ ok: false, error: 'Tab ChatGPT chưa sẵn sàng nhận tin nhắn mới.' });
+       sendResponse({ ok: false, error: 'The ChatGPT tab is not ready to receive new messages.' });
       return false;
     }
     if (activeRequest && Date.now() - activeRequest.startedAt < 1_500) {
@@ -245,7 +245,7 @@ async function selectModel(model) {
       .filter((item) => isVisible(item) && !item.closest('form[data-type="unified-composer"]'));
     const wanted = normalize(target);
     return candidates.find((item) => normalize(item.textContent).includes(wanted)) || null;
-  }, 4_000, `Không tìm thấy model “${target}” trong menu ChatGPT.`);
+   }, 4_000, `Could not find model “${target}” in the ChatGPT menu.`);
   option.click();
   await delay(200);
 }
@@ -268,7 +268,7 @@ function cleanModelLabel(value) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   const stripped = text.replace(/^model\s*[:：-]?\s*/i, '').trim();
-  const ignored = ['model', 'models', 'select model', 'choose model', 'chatgpt', 'suy luận', 'vừa', 'thinking', 'reasoning'];
+   const ignored = ['model', 'models', 'select model', 'choose model', 'chatgpt', 'inference', 'recent', 'thinking', 'reasoning'];
   return (!stripped || ignored.includes(stripped.toLowerCase())) ? '' : stripped;
 }
 
@@ -365,7 +365,7 @@ async function submitPrompt(composer) {
 }
 
 async function waitForConversationIdentity() {
-  return waitFor(currentConversationIdentity, 15_000, 'ChatGPT chưa tạo conversation ID trên URL.');
+   return waitFor(currentConversationIdentity, 15_000, 'ChatGPT has not created a conversation ID in the URL.');
 }
 
 function currentConversationIdentity() {
@@ -432,7 +432,7 @@ async function progress(payload) {
 }
 function renderReturnToChatCmd(enabled) { globalThis.ChatCmdConversationUi?.renderReturnToChatCmd(enabled); }
 function delay(ms) { return globalThis.ChatCmdCaptureClock?.sleep(ms) ?? new Promise((resolve) => setTimeout(resolve, ms)); }
-function errorMessage(error) { return error instanceof Error ? error.message : String(error || 'Lỗi khi thao tác ChatGPT.'); }
+ function errorMessage(error) { return error instanceof Error ? error.message : String(error || 'ChatGPT operation failed.'); }
 
 async function executeToolLoop(owner, requestId, initialResult) {
   let currentResult = initialResult;
