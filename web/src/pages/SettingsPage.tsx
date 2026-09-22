@@ -1,5 +1,5 @@
 import { subagentLabel } from '../tasks/subagentPresentation';
-import { AlertTriangle, Database, Download, Info, LockKeyhole, MonitorCog, Save, ShieldCheck, SlidersHorizontal, TerminalSquare, Upload, Volume2 } from 'lucide-react';
+import { AlertTriangle, Database, Download, Info, LockKeyhole, MonitorCog, Save, ShieldAlert, ShieldCheck, SlidersHorizontal, TerminalSquare, Upload, Volume2 } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -125,6 +125,19 @@ export function SettingsPage() {
               <div className="settings-control-grid">
                 <SettingField label={tr('Default execution mode')} hint={tr('Applied to newly created conversations.')} detail={tr('Ask for approval is safer because sensitive actions require confirmation. Allow all reduces interruptions but gives new conversations broader local execution access.')}><select value={value.executionMode} onChange={(event) => update('executionMode', event.target.value as LocalSettings['executionMode'])}><option value="approval">{tr('Ask for approval')}</option><option value="allowAll">{tr('Allow all')}</option></select></SettingField>
                 <ToggleSetting checked={value.approveNewConversations} onChange={(checked) => update('approveNewConversations', checked)} label={tr('Approve new conversations')} hint={tr('Every new conversation from the ChatGPT website must be approved before the Agent can execute anything.')} detail={tr('Recommended when multiple people can access this computer or when you want to review every new Agent session before it starts.')} />
+              </div>
+            </div>
+            <div className="settings-section-block">
+              <SectionHeading icon={<ShieldAlert />} title={tr('Dangerous Operations & Sandbox Filter')} description={tr('Directly deny dangerous actions without human approval prompts, and restrict operations to the project folder.')} />
+              <div className="settings-control-grid">
+                <ToggleSetting checked={value.enforceProjectFolderOnly ?? true} onChange={(checked) => update('enforceProjectFolderOnly', checked)} label={tr('Restrict to project folder')} hint={tr('Only allow read/write and commands inside the assigned project folder.')} detail={tr('Blocks file access or commands targeting paths outside the designated project folder.')} />
+                <ToggleSetting checked={value.blockFileDelete ?? true} onChange={(checked) => update('blockFileDelete', checked)} label={tr('Block file deletion (Delete)')} hint={tr('Forbid fs_delete, rm, del, Remove-Item, and rmdir.')} detail={tr('Protects against accidental deletion of project files.')} />
+                <ToggleSetting checked={value.blockProcessKill ?? true} onChange={(checked) => update('blockProcessKill', checked)} label={tr('Block process termination (Kill)')} hint={tr('Forbid process_kill, taskkill, kill, and Stop-Process.')} detail={tr('Prevents AI from terminating external running processes.')} />
+                <ToggleSetting checked={value.blockSystemShutdown ?? true} onChange={(checked) => update('blockSystemShutdown', checked)} label={tr('Block shutdown & reboot')} hint={tr('Forbid shutdown, reboot, Restart-Computer, and Stop-Computer.')} detail={tr('Prevents unexpected system reboots or power downs.')} />
+                <ToggleSetting checked={value.blockDiskFormat ?? true} onChange={(checked) => update('blockDiskFormat', checked)} label={tr('Block disk format')} hint={tr('Forbid format, diskpart, mkfs, and storage wipe tools.')} detail={tr('Prevents destructive disk partition operations.')} />
+              </div>
+              <div className="settings-control-grid one-column" style={{ marginTop: '0.75rem' }}>
+                <SettingField wide label={tr('Custom blocked keywords / commands')} hint={tr('Enter keywords, commands, or patterns to block immediately (comma or line separated).')} detail={tr('If any command contains these keywords, it will be rejected automatically without prompting.')}><textarea rows={3} placeholder={tr('e.g. reg delete, netsh, curl | sh')} value={value.customBlockedKeywords ?? ''} onChange={(event) => update('customBlockedKeywords', event.target.value)} /></SettingField>
               </div>
             </div>
             <div className="settings-section-block">

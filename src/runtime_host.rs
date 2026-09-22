@@ -20,6 +20,7 @@ mod persistence;
 mod plan_prompt;
 pub(crate) mod plan_prompt_persistence;
 mod queued_messages;
+mod safety_filter;
 mod subagent_concurrency;
 mod subagent_contract;
 mod subagent_fallback;

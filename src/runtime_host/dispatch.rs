@@ -67,6 +67,8 @@ impl RuntimeHost {
         } else {
             arguments
         };
+        self.check_safety_filter(tool, &context, &arguments, project_folder.as_deref())
+            .await?;
         if filesystem_tool || tool.starts_with("git_") {
             task_path_scopes.extend(path_scopes::argument_path_scopes(&arguments));
             task_path_scopes.sort();

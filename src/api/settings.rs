@@ -111,7 +111,7 @@ pub(super) fn mcp_endpoint(state: &AppState, token: &str) -> String {
 }
 
 pub(super) async fn settings_value(state: &Arc<AppState>) -> Result<Value, Problem> {
-    let defaults = json!({ "bindAddress": state.bind_address, "port": state.port, "mcpEndpoint": mcp_endpoint_template(state), "databasePath": state.database_path, "databaseState": "ready", "executionMode": "allowAll", "approveNewConversations": true, "terminalExecutable": default_shell(), "taskConcurrency": 4, "sessionConcurrency": 8, "subagentConcurrency": 0, "theme": "dark", "fontFamily": "Inter", "taskFontScale": 100, "language": "en", "sound": true, "newAgentSound": true, "finishedTaskSound": true, "dataRetention": "1d" });
+    let defaults = json!({ "bindAddress": state.bind_address, "port": state.port, "mcpEndpoint": mcp_endpoint_template(state), "databasePath": state.database_path, "databaseState": "ready", "executionMode": "allowAll", "approveNewConversations": true, "terminalExecutable": default_shell(), "taskConcurrency": 4, "sessionConcurrency": 8, "subagentConcurrency": 0, "theme": "dark", "fontFamily": "Inter", "taskFontScale": 100, "language": "en", "sound": true, "newAgentSound": true, "finishedTaskSound": true, "dataRetention": "1d", "blockFileDelete": true, "blockProcessKill": true, "blockSystemShutdown": true, "blockDiskFormat": true, "customBlockedKeywords": "", "enforceProjectFolderOnly": true });
     let mut object = defaults.as_object().cloned().unwrap_or_default();
     for key in [
         "executionMode",
@@ -128,6 +128,12 @@ pub(super) async fn settings_value(state: &Arc<AppState>) -> Result<Value, Probl
         "newAgentSound",
         "finishedTaskSound",
         "dataRetention",
+        "blockFileDelete",
+        "blockProcessKill",
+        "blockSystemShutdown",
+        "blockDiskFormat",
+        "customBlockedKeywords",
+        "enforceProjectFolderOnly",
     ] {
         if let Some(setting) = state
             .repository
