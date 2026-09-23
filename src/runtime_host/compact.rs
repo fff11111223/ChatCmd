@@ -317,7 +317,7 @@ mod tests {
             .call_compact_checked(
                 "agent_user_message",
                 continued,
-                json!({"content":"tiếp tục công việc"}),
+                json!({"content":"continue working"}),
             )
             .await
             .expect("replacement conversation should resume the same task");

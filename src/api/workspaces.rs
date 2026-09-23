@@ -100,7 +100,7 @@ pub(super) async fn update_workspace_project(
             Problem::new(
                 StatusCode::NOT_FOUND,
                 "Workspace project not found",
-                "Dự án không còn tồn tại.",
+                "Project no longer exists.",
             )
         })?;
     let old_canonical = existing.get::<String, _>("canonical_path");
@@ -196,7 +196,7 @@ pub(super) async fn delete_workspace_project(
             Problem::new(
                 StatusCode::NOT_FOUND,
                 "Workspace project not found",
-                "Dự án không còn tồn tại.",
+                "Project no longer exists.",
             )
         })?;
     let canonical = row.get::<String, _>("canonical_path");
@@ -236,7 +236,7 @@ pub(super) async fn delete_workspace_project(
             Problem::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Invalid stored task id",
-                "Không thể xóa cuộc trò chuyện của dự án.",
+                "Unable to delete the project conversation.",
             )
         })?;
         delete_task_by_id(&state, &parsed).await?;
