@@ -274,6 +274,19 @@ export function activityCommand(activity: ToolActivity) {
   const input = asObject(activity.input);
   const command = stringValue(input.command);
   if (command) return command;
+  // Approval summary wraps command info in a nested object: { executable, commandPreview, argumentCount, argumentsRedacted }
+  const commandObj = asObject(input.command as unknown);
+  // commandPreview contains the full human-readable command string built by the backend
+  const preview = stringValue(commandObj.commandPreview);
+  if (preview) return preview;
+  if (commandObj.executable) {
+    const exe = stringValue(commandObj.executable);
+    const count = typeof commandObj.argumentCount === 'number' ? commandObj.argumentCount : null;
+    if (exe) {
+      if (count !== null && count > 0) return `${exe} (${count} args)`;
+      return exe;
+    }
+  }
   const path = stringValue(input.path);
   const query = stringValue(input.query);
   const pattern = stringValue(input.pattern);
@@ -284,6 +297,30 @@ export function activityCommand(activity: ToolActivity) {
   if (legacy.command) return legacy.command;
   const summary = activityInputDetails(activity).slice(0, 2).map((item) => `${item.label}: ${item.value.replace(/\n/g, ', ')}`).join(' · ');
   return summary ? `${activity.tool} — ${summary}` : activity.tool;
+}
+
+/** Extra details to show in the inline approval preview panel (below the command line). */
+export function approvalCommandDetails(activity: ToolActivity): { label: string; value: string }[] {
+  const input = asObject(activity.input);
+  const details: { label: string; value: string }[] = [];
+  // cwd / workingDirectory — from raw arguments if available (non-approval path)
+  const cwd = stringValue(input.cwd) || stringValue(input.workingDirectory);
+  if (cwd) details.push({ label: tr('Working directory'), value: cwd });
+  // executable from raw args (non-approval path)
+  const exe = stringValue(input.executable);
+  if (exe && !details.some((d) => d.label === tr('Executable'))) {
+    details.push({ label: tr('Executable'), value: exe });
+  }
+  // paths[] from the approval summary — for command_run this contains the canonicalized cwd
+  if (!cwd && Array.isArray(input.paths) && (input.paths as unknown[]).length > 0) {
+    const paths = (input.paths as unknown[]).filter((p): p is string => typeof p === 'string');
+    if (paths.length === 1) {
+      details.push({ label: tr('Working directory'), value: paths[0] });
+    } else if (paths.length > 1) {
+      details.push({ label: tr('Path'), value: paths.join(', ') });
+    }
+  }
+  return details;
 }
 
 export interface ActivityInputDetail { label: string; value: string; code?: boolean }

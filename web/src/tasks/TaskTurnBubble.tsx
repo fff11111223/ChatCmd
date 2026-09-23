@@ -1,6 +1,6 @@
 import { subagentLabel, subagentTreeRows } from './subagentPresentation';
 import { TurnThinkingSources } from './TurnThinkingSources';
-import { browserThinking, isBrowserEvent } from './chatGptThinking';
+import { browserThinking, isBrowserEvent, type BrowserThinking, type BrowserThought } from './chatGptThinking';
 import { BookOpen, Bot, CheckCircle2, ChevronDown, CircleAlert, CircleStop, Clock3, ExternalLink, FileCode2, FilePenLine, GitBranch, LoaderCircle, MessageSquareText, Search, TerminalSquare, Wrench } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChatRichText } from './rich-text/ChatRichText';
@@ -17,6 +17,7 @@ import {
   activityCodeView,
   activityDiffView,
   activityCommand,
+  approvalCommandDetails,
   activityDuration,
   activityLabel,
   activityOutput,
@@ -101,7 +102,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
         {thinkingOpen && <div className="turn-thinking-content">
           <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'}>
           {subagents.length > 0 && <SubagentList agents={subagents} />}
-          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} />}
+          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} browser={dualSources ? browser : null} />}
           {isThinking && <div className="turn-thinking" role="status"><span>{tr('Thinking and preparing a response…')}</span></div>}
           {status === 'failed' && (agentLabel === 'ChatGPT' && isChatGptSendDisabledMessage(latestMessage(events))
             ? <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('Waiting to retry')}</strong><p>{tr('The ChatGPT send button is temporarily disabled. The system will retry in 10 seconds; you can cancel the send below.')}</p></div></div>
@@ -286,7 +287,7 @@ export function subagentStatusText(agent: Pick<SubagentRun, 'attempt' | 'termina
   return `${statusLabel}${agent.attempt > 0 ? ` · ${tr('Attempt')} ${agent.attempt}` : ''}${agent.terminalReason ? ` · ${agent.terminalReason}` : ''}`;
 }
 
-function TurnProcess({ blocks, taskId, onStop }: { blocks: ReturnType<typeof buildProcessBlocks>; taskId: string; onStop: (activity: ToolActivity) => void }) {
+function TurnProcess({ blocks, taskId, onStop, browser }: { blocks: ReturnType<typeof buildProcessBlocks>; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const last = blocks.at(-1);
@@ -299,7 +300,13 @@ function TurnProcess({ blocks, taskId, onStop }: { blocks: ReturnType<typeof bui
     return () => window.cancelAnimationFrame(frame);
   }, [updateKey]);
   const updateScrollPosition = () => { const root = scrollRef.current; if (root) nearBottomRef.current = root.scrollHeight - root.scrollTop - root.clientHeight < 48; };
+  // Interleave ChatGPT browser messages (commentary + answer) as inline progress items
+  // between the activity/tool blocks so users can see what ChatGPT said between commands.
+  const chatMessages = browser?.messages ?? [];
   return <div ref={scrollRef} className="turn-activities turn-process" role="region" tabIndex={0} aria-label={tr('Agent progress')} onScroll={updateScrollPosition}>
+    {chatMessages.length > 0 && <div className="turn-chatgpt-messages">
+      {chatMessages.map((msg) => <ChatGptMessage key={msg.id} message={msg} />)}
+    </div>}
     {blocks.map((block) => block.type === 'progress'
       ? <ProgressMessage event={block.event} key={block.key} />
       : <ActivityBatch activities={block.activities} taskId={taskId} onStop={onStop} key={block.key} />)}
@@ -332,6 +339,13 @@ function ProgressMessage({ event }: { event: TimelineEvent }) {
   return <div className="turn-progress-message"><MessageSquareText aria-hidden="true" /><div className="turn-progress-content turn-response-content"><RichText content={eventText(event)} /></div><time dateTime={event.occurredAt}>{formatClockTime(event.occurredAt)}</time></div>;
 }
 
+function ChatGptMessage({ message }: { message: BrowserThought }) {
+  return <div className={`turn-chatgpt-message turn-chatgpt-${message.kind}`}>
+    <Bot aria-hidden="true" />
+    <div className="turn-progress-content turn-response-content"><RichText content={message.content} /></div>
+  </div>;
+}
+
 function RichText({ content }: { content: string }) {
   return <ChatRichText content={content} />;
 }
@@ -344,13 +358,15 @@ function ActivityRow({ activity, taskId, onStop }: { activity: ToolActivity; tas
   const [recentlyViewed, setRecentlyViewed] = useState(false);
   useEffect(() => { if (!recentlyViewed) return; const timer = window.setTimeout(() => setRecentlyViewed(false), 3000); return () => window.clearTimeout(timer); }, [recentlyViewed]);
   const closePopup = () => { setOpen(false); setRecentlyViewed(false); window.requestAnimationFrame(() => setRecentlyViewed(true)); };
-  const loadDetail = () => {
-    setOpen(true); setDetail(null); setDetailError(''); setDetailLoading(true);
+  const fetchDetail = (showModal: boolean) => {
+    if (showModal) setOpen(true);
+    setDetail(null); setDetailError(''); setDetailLoading(true);
     void api.taskActivity(taskId, activity.id)
       .then(setDetail)
       .catch((reason) => setDetailError(reason instanceof Error ? reason.message : tr('Could not load tool details.')))
       .finally(() => setDetailLoading(false));
   };
+  const loadDetail = () => fetchDetail(true);
   const approvalPending = activity.status === 'pending_approval';
   const stopRequested = activity.status === 'stop_requested';
   const stopped = activity.status === 'stopped';
@@ -361,6 +377,19 @@ function ActivityRow({ activity, taskId, onStop }: { activity: ToolActivity; tas
   const stoppable = activity.status === 'started';
   const Icon = ended ? CircleStop : failed ? CircleAlert : activity.kind === 'read' ? BookOpen : activity.kind === 'search' ? Search : ['edit', 'create', 'delete', 'copy', 'move'].includes(activity.kind) ? FilePenLine : activity.kind === 'git' ? GitBranch : activity.kind === 'tool' ? Wrench : TerminalSquare;
   const resolvedActivity: ToolActivity = detail ? { ...activity, ...detail, status: detail.status ?? activity.status } : activity;
+
+  // Auto-fetch detail when approval is pending so we get the real arguments (cwd etc.) for the preview.
+  useEffect(() => {
+    if (approvalPending && taskId && !detail && !detailLoading) {
+      fetchDetail(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approvalPending, taskId]);
+
+  // Build approval preview from the resolved activity (which has full input once detail loads).
+  const approvalCommand = approvalPending ? activityCommand(resolvedActivity) : '';
+  const approvalExtraDetails = approvalPending ? approvalCommandDetails(resolvedActivity) : [];
+
   return <div className={`terminal-activity ${running ? 'running' : ''} ${stopRequested ? 'stopping' : ''} ${ended ? 'stopped' : ''} ${failed ? 'failed' : ''} ${recentlyViewed ? 'recently-viewed' : ''}`}>
     <button type="button" className="activity-popup-trigger" onClick={loadDetail} aria-haspopup="dialog">
       <span className="activity-row-icon" aria-hidden="true">{running ? <LoaderCircle className="spin" /> : <Icon />}</span>
@@ -369,7 +398,21 @@ function ActivityRow({ activity, taskId, onStop }: { activity: ToolActivity; tas
       <ChevronDown className="activity-chevron" aria-hidden="true" />
     </button>
     {stoppable && <button type="button" className="activity-stop-button" aria-label={tr('Stop {name}', { name: activityLabel(activity) })} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onStop(activity); }}><CircleStop aria-hidden="true" /><span>{tr('Stop')}</span></button>}
-    {approvalPending && taskId && <ApprovalDecisionActions target={{ taskId, activityId: activity.id, turnId: activity.turnId }} reusable={isSafeReadApproval(activity.input)} />}
+    {approvalPending && taskId && <>
+      <div className="approval-command-preview">
+        {detailLoading && !approvalCommand
+          ? <span className="approval-command-loading"><LoaderCircle className="spin" aria-hidden="true" />{tr('Loading…')}</span>
+          : approvalCommand
+            ? <>
+                <code className="approval-command-text">{approvalCommand}</code>
+                {approvalExtraDetails.map((d) => (
+                  <span key={d.label} className="approval-detail-row"><small>{d.label}:</small><code>{d.value}</code></span>
+                ))}
+              </>
+            : <span className="approval-command-text approval-command-unknown">{tr('Click ▸ above to view full tool details')}</span>}
+      </div>
+      <ApprovalDecisionActions target={{ taskId, activityId: activity.id, turnId: activity.turnId }} reusable={isSafeReadApproval(activity.input)} />
+    </>}
     {open && <Modal className="tool-activity-modal" title={activityLabel(activity)} description={`${formatClockTime(activity.startedAt)} · ${activityDuration(activity.startedAt, activity.finishedAt ?? new Date().toISOString())}`} close={closePopup}>
       {detailLoading
         ? <div className="activity-popup-content"><div className="activity-detail-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div></div>

@@ -88,13 +88,57 @@ fn command_approval_summary(tool: &str, arguments: &Value) -> Option<Value> {
         hasher.update(encoded.as_bytes());
     }
     let (executable_preview, executable_truncated) = bounded_preview(executable, 256);
+
+    // Build a human-readable command preview for the approval UI.
+    // This lets the user see exactly what will be executed before allowing/rejecting.
+    // Note: this is stored in the DB event and shown to the local user only —
+    // it is NOT forwarded to the AI (argumentsRedacted flag ensures that).
+    let command_preview = build_command_preview(executable, argument_values);
+
     Some(json!({
         "executable": executable_preview,
         "executableTruncated": executable_truncated,
         "argumentCount": argument_values.len(),
         "argumentsSha256": format!("sha256:{:x}", hasher.finalize()),
         "argumentsRedacted": true,
+        "commandPreview": command_preview,
     }))
+}
+
+/// Format a command as a readable shell-like string, e.g. `powershell.exe -Command "Get-ChildItem"`.
+/// Truncated at 1200 chars to keep the UI readable.
+fn build_command_preview(executable: &str, args: &[Value]) -> String {
+    let mut parts: Vec<String> = vec![shell_quote(executable)];
+    for arg in args {
+        let s = match arg {
+            Value::String(s) => shell_quote(s),
+            other => shell_quote(&other.to_string()),
+        };
+        parts.push(s);
+    }
+    let full = parts.join(" ");
+    // Truncate gracefully at a word boundary around 1200 chars
+    if full.len() <= 1200 {
+        full
+    } else {
+        format!("{}…", &full[..full.floor_char_boundary(1199)])
+    }
+}
+
+/// Quote a single argument if it contains spaces or special characters.
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "\"\"".to_owned();
+    }
+    // If it already starts/ends with quotes, leave it as-is to avoid double-quoting.
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        return s.to_owned();
+    }
+    if s.chars().any(|c| matches!(c, ' ' | '\t' | '"' | '\'' | '\\' | '&' | '|' | '<' | '>' | ';' | '(' | ')' | '{' | '}')) {
+        format!("\"{}\"", s.replace('"', "\\\""))
+    } else {
+        s.to_owned()
+    }
 }
 
 fn bounded_preview(value: &str, max_bytes: usize) -> (&str, bool) {
