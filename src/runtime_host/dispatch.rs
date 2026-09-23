@@ -38,6 +38,7 @@ impl RuntimeHost {
         let project_folder = if filesystem_tool
             || tool.starts_with("git_")
             || tool == "shell_create"
+            || tool == "shell_write"  // needed so command text can be scanned for out-of-scope paths
             || tool == "command_run"
             || tool == "workspace_roots"
             || tool == "project_context"
@@ -53,7 +54,24 @@ impl RuntimeHost {
             || tool.starts_with("git_")
             || matches!(tool, "command_run" | "shell_create" | "workspace_roots")
         {
-            self.task_user_path_scopes(&context).await?
+            let raw_scopes = self.task_user_path_scopes(&context).await?;
+            // When sandbox is active, filter user-mentioned paths to only those
+            // within the project_folder. Without this, the AI gains access to ANY
+            // absolute path the user ever mentioned in chat (e.g. "read C:\Users\frank\secret.txt").
+            if self.load_safety_settings_enforce_only().await {
+                if let Some(folder) = project_folder.as_deref() {
+                    let canonical_folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+                    raw_scopes
+                        .into_iter()
+                        .filter(|p| p.starts_with(&canonical_folder))
+                        .collect()
+                } else {
+                    // No project folder — don't grant any extra scopes from user messages.
+                    Vec::new()
+                }
+            } else {
+                raw_scopes
+            }
         } else {
             Vec::new()
         };
@@ -70,7 +88,30 @@ impl RuntimeHost {
         self.check_safety_filter(tool, &context, &arguments, project_folder.as_deref())
             .await?;
         if filesystem_tool || tool.starts_with("git_") {
-            task_path_scopes.extend(path_scopes::argument_path_scopes(&arguments));
+            // Only add argument-derived scopes that are within the project folder when
+            // the sandbox is active. Blindly adding any absolute path from tool arguments
+            // as an allowed scope is a bypass vector — the AI can simply put an arbitrary
+            // path in the arguments to gain filesystem access to it.
+            let extra_scopes = path_scopes::argument_path_scopes(&arguments);
+            let settings_enforce = self.load_safety_settings_enforce_only().await;
+            for scope in extra_scopes {
+                let allowed = if settings_enforce {
+                    // Sandbox on: only allow scopes that are inside the project_folder.
+                    project_folder
+                        .as_ref()
+                        .map(|folder| {
+                            let canonical_folder = folder.canonicalize().unwrap_or_else(|_| folder.clone());
+                            scope.starts_with(&canonical_folder)
+                        })
+                        .unwrap_or(false)
+                } else {
+                    // Sandbox off: allow any scope (original behaviour).
+                    true
+                };
+                if allowed && !task_path_scopes.contains(&scope) {
+                    task_path_scopes.push(scope);
+                }
+            }
             task_path_scopes.sort();
             task_path_scopes.dedup();
         }
@@ -118,9 +159,15 @@ impl RuntimeHost {
                 };
                 let mut shell_scopes = task_path_scopes.clone();
                 if let Some(scope) = path_scopes::scope_for_path(&working_directory) {
-                    shell_scopes.push(scope);
-                    shell_scopes.sort();
-                    shell_scopes.dedup();
+                    // Only add working_directory as a scope if it's already within an allowed scope,
+                    // or if there is no project_folder (sandbox off). This mirrors the fix in
+                    // command_tools.rs — adding any absolute path unconditionally is a bypass vector.
+                    let already_covered = shell_scopes.iter().any(|s| scope.starts_with(s));
+                    if already_covered || project_folder.is_none() {
+                        shell_scopes.push(scope);
+                        shell_scopes.sort();
+                        shell_scopes.dedup();
+                    }
                 }
                 self.enable_shell_file_watcher(&context);
                 let info = self

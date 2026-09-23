@@ -103,6 +103,12 @@
   /**
    * Build the tool-result block that will be injected into the ChatGPT
    * composer so ChatGPT can read the result and continue its task.
+   *
+   * errorInfo may be:
+   *  - an object with { code, message } (normal backend RuntimeError)
+   *  - an object with { message } (network-level error from background-io)
+   *  - a plain string  (catch path in background.js, e.g. extension error)
+   *  - undefined/null  (unknown failure)
    */
   function formatResult(callId, toolName, ok, result, errorInfo) {
     if (ok) {
@@ -111,7 +117,16 @@
         : JSON.stringify(result, null, 2);
       return `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(content)}}\n\`\`\``;
     }
-    const msg = errorInfo?.message || 'Tool execution failed.';
+    // Normalise errorInfo into a human-readable message.
+    let msg;
+    if (typeof errorInfo === 'string') {
+      msg = errorInfo || 'Tool execution failed.';
+    } else if (errorInfo && typeof errorInfo === 'object') {
+      const code = errorInfo.code ? `[${errorInfo.code}] ` : '';
+      msg = errorInfo.message ? `${code}${errorInfo.message}` : (code || 'Tool execution failed.');
+    } else {
+      msg = 'Tool execution failed.';
+    }
     return `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(msg)}}\n\`\`\``;
   }
 
