@@ -8,9 +8,10 @@ const LOG_KEY = 'chatcmd-extension-logs';
 const MAX_LOGS = 200;
 const CHATGPT_HOME = 'https://chatgpt.com/';
 
-importScripts('background-io.js', 'background-tabs.js', 'approval-bridge.js', 'background-recovery.js', 'background-capture.js', 'background-clock.js', 'background-subagent-heartbeat.js', 'compact-protocol.js', 'background-compact-destination.js', 'background-compact.js');
+importScripts('background-gemini.js', 'background-io.js', 'background-tabs.js', 'approval-bridge.js', 'background-recovery.js', 'background-capture.js', 'background-clock.js', 'background-subagent-heartbeat.js', 'compact-protocol.js', 'background-compact-destination.js', 'background-compact.js');
 setTimeout(() => void recoverContentScriptsOnStartup(), 200);
 void reconcileOpenChatGptIdentities();
+void reconcileOpenGeminiIdentities();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false;
@@ -30,7 +31,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.localBaseUrl) void configureApprovalBridge(message.localBaseUrl).catch(() => undefined);
     if (typeof message.approvalSoundEnabled === 'boolean') configureApprovalSound(message.approvalSoundEnabled);
     if (message.action === 'ping') {
-      void chatGptTabStatus(message.conversationUrl, sender.tab?.id)
+      const isGem = message.provider === 'gemini' || isGeminiUrl(message.conversationUrl);
+      const tabStatus = isGem ? geminiTabStatus : chatGptTabStatus;
+      void tabStatus(message.conversationUrl, sender.tab?.id)
         .then((status) => sendResponse({ ok: true, extensionVersion: chrome.runtime.getManifest().version, ...status }))
         .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
       return true;
@@ -44,7 +47,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'send') {
       try {
         const localBaseUrl = localOrigin(message.localBaseUrl);
-        void startRequest({ ...message, localBaseUrl, sourceTabId: sender.tab?.id }).catch((error) => void reportFailure(message.requestId, localBaseUrl, error));
+        const starter = message.provider === 'gemini' ? startGeminiRequest : startRequest;
+        void starter({ ...message, localBaseUrl, sourceTabId: sender.tab?.id }).catch((error) => void reportFailure(message.requestId, localBaseUrl, error));
         sendResponse({ ok: true });
       } catch (error) { sendResponse({ ok: false, error: errorMessage(error) }); }
       return false;
@@ -68,15 +72,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     if (message.action === 'open-tab') {
-      void openConversationTab(message.conversationUrl, sender.tab?.id).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+      const opener = isGeminiUrl(message.conversationUrl) ? openGeminiTab : openConversationTab;
+      void opener(message.conversationUrl, sender.tab?.id).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
       return true;
     }
     if (message.action === 'focus-tab') {
-      void focusConversationTab(message.conversationUrl, sender.tab?.id).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+      const focuser = isGeminiUrl(message.conversationUrl) ? focusGeminiTab : focusConversationTab;
+      void focuser(message.conversationUrl, sender.tab?.id).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
       return true;
     }
     if (message.action === 'close-tab') {
-      void closeConversationTab(message.conversationUrl).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+      const closer = isGeminiUrl(message.conversationUrl) ? closeGeminiTab : closeConversationTab;
+      void closer(message.conversationUrl).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
       return true;
     }
     if (message.action === 'logs') {
@@ -108,6 +115,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void resumeObservationRequest(sender.tab?.id).then((request) => sendResponse({ ok: true, request }))
       .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
     return true;
+  }
+  if (message.type === 'chatcmd-gemini-result') {
+    void handleGeminiResult(message, sender).catch((error) => console.error('[ChatCMD] Gemini result handling failed', error));
+    return false;
+  }
+  if (message.type === 'chatcmd-gemini-discovery') {
+    void handleGeminiDiscovery(message, sender).catch((error) => console.error('[ChatCMD] Gemini discovery failed', error));
+    return false;
   }
   if (message.type === 'chatcmd-chatgpt-progress') {
     void handleProgress(message, sender.tab?.id).then((result) => sendResponse({ ok: true, ...result })).catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
@@ -143,10 +158,16 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!changeInfo.url || !isChatGptUrl(changeInfo.url)) return;
   const tabUrl = tab?.url || changeInfo.url;
+  if (!tabUrl) return;
+  const isChat = isChatGptUrl(tabUrl);
+  const isGem = isGeminiUrl(tabUrl);
+  if (!isChat && !isGem) return;
   void refreshConversationAliases(tabId, tabUrl);
   void syncRequestIdentityFromTab(tabId, tabUrl);
+  if (isGem) {
+    void handleGeminiTabNavigation(tabId, tabUrl);
+  }
 });
 
 async function startRequest(message) {

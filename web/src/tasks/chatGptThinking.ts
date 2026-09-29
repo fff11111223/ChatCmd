@@ -4,7 +4,8 @@ import { snapshotRevision } from './timelineSnapshots';
 export type BrowserThought = { id: string; kind: 'commentary' | 'answer'; content: string };
 export type BrowserThinking = { messages: BrowserThought[]; completed: boolean; revision: number };
 export function isBrowserEvent(event: TimelineEvent): boolean {
-  return event.type === 'chatgpt_think' || object(event.payload).provider === 'chatgpt_web';
+  const provider = object(event.payload).provider;
+  return event.type === 'chatgpt_think' || provider === 'chatgpt_web' || provider === 'gemini_web';
 }
 export function browserThinking(events: TimelineEvent[]): BrowserThinking {
   const snapshot = events.filter((event) => event.type === 'chatgpt_think')

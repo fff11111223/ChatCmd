@@ -16,6 +16,7 @@ import { useCompactBridgeSync } from './compact/useCompactBridgeSync';
 import { fileAttachmentPayloads, messageContentWithTextAttachments, textAttachmentFromPaste, type ChatGptTextAttachment } from './pasteAttachments';
 
 const DEFAULT_MODEL = 'Auto';
+const DEFAULT_PROVIDER = 'chatgpt' as const;
 
 export function NewChatGptConversation() {
   const agents = useLoad(api.agents, []);
@@ -38,6 +39,7 @@ export function NewChatGptConversation() {
   const pasteSequence = useRef(0);
   const [folderPicking, setFolderPicking] = useState(false);
   const [modelTabOpening, setModelTabOpening] = useState(false);
+  const [provider, setProvider] = useState<'chatgpt' | 'gemini'>(DEFAULT_PROVIDER);
   const [confirmWithoutFolder, setConfirmWithoutFolder] = useState(false);
   const [extensionReady, setExtensionReady] = useState<boolean | null>(null);
   const [chatGptTabOpen, setChatGptTabOpen] = useState<boolean | null>(null);
@@ -121,16 +123,17 @@ export function NewChatGptConversation() {
     setConfirmWithoutFolder(false);
     setBusy(true); setError('');
     try {
-      const status = await chatGptExtensionStatus();
+      const status = await chatGptExtensionStatus(undefined, provider);
       setExtensionReady(status.ready); setChatGptTabOpen(status.chatGptTabOpen);
       if (!status.ready) throw new Error(tr('ChatCMD ChatGPT Bridge extension is not ready. Enable or reload it, then try again.'));
-      const request = await api.createChatGptRequest({ agentId, model: DEFAULT_MODEL, projectFolder: projectFolder.trim(), content: effectiveContent });
-      rememberAgentUse(agentId);
-      await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model, newConversationUrl, attachments: fileAttachmentPayloads(textAttachments) });
+      const effectiveAgentId = provider === 'gemini' ? (agentId || 'gemini-web-agent') : agentId;
+      const request = await api.createChatGptRequest({ agentId: effectiveAgentId, provider, model: DEFAULT_MODEL, projectFolder: projectFolder.trim(), content: effectiveContent });
+      if (provider !== 'gemini' && agentId) rememberAgentUse(agentId);
+      await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model, provider, newConversationUrl, attachments: fileAttachmentPayloads(textAttachments) });
       const taskId = await waitForTaskBinding(request.id);
       navigate(`/tasks/${encodeURIComponent(taskId)}`, { replace: true });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : tr('Could not send the message to ChatGPT.'));
+      setError(reason instanceof Error ? reason.message : (provider === 'gemini' ? tr('Could not send the message to Gemini.') : tr('Could not send the message to ChatGPT.')));
       setBusy(false);
     }
   };
@@ -147,7 +150,7 @@ export function NewChatGptConversation() {
       <header className="chatgpt-chat-topbar">
         <div className="chatgpt-chat-identity">
           <span className="chatgpt-logo"><Bot /></span>
-          <div><strong>ChatGPT</strong><small>{tr('Send using the signed-in ChatGPT session in Chrome / Edge.')}</small></div>
+          <div><strong>{provider === 'gemini' ? 'Gemini' : 'ChatGPT'}</strong><small>{provider === 'gemini' ? tr('Send using the signed-in Gemini session in Chrome / Edge.') : tr('Send using the signed-in ChatGPT session in Chrome / Edge.')}</small></div>
         </div>
         <div className="chatgpt-chat-controls">
           <span className={`chatgpt-connection-dot ${extensionReady === false ? 'missing' : extensionReady ? 'ready' : ''}`} title={extensionReady === null ? tr('Checking extension…') : extensionReady ? tr('Extension ready') : tr('Extension not connected')}>{extensionReady === null ? <LoaderCircle className="spin" /> : extensionReady ? <MessageSquarePlus /> : <Unplug />}</span>
@@ -155,12 +158,12 @@ export function NewChatGptConversation() {
         </div>
       </header>
 
-      {extensionReady && chatGptTabOpen === false && <div className="chatgpt-chat-notice" role="status"><CircleAlert /><span><strong>{tr('No blank ChatGPT tab is open for a new conversation.')}</strong> {tr('After you send the message, ChatCMD will automatically open a new ChatGPT tab and continue there.')}</span></div>}
+      {extensionReady && chatGptTabOpen === false && <div className="chatgpt-chat-notice" role="status"><CircleAlert /><span><strong>{provider === 'gemini' ? tr('No blank Gemini tab is open for a new conversation.') : tr('No blank ChatGPT tab is open for a new conversation.')}</strong> {provider === 'gemini' ? tr('After you send the message, ChatCMD will automatically open a Gemini tab and continue there.') : tr('After you send the message, ChatCMD will automatically open a new ChatGPT tab and continue there.')}</span></div>}
 
       <div className="chatgpt-chat-thread" aria-live="polite">
         <div className="chatgpt-ai-message">
           <span className="chatgpt-message-avatar"><Bot /></span>
-          <div className="chatgpt-message-copy"><strong>ChatGPT</strong><p>{selectedAgent ? tr('What would you like me to assign to @{name}?', { name: selectedAgent.name }) : tr('Choose an MCP agent to start the conversation.')}</p><small>{tr('Your request will be sent through ChatGPT and the agent will perform the work in ChatCMD.')}</small></div>
+          <div className="chatgpt-message-copy"><strong>{provider === 'gemini' ? 'Gemini' : 'ChatGPT'}</strong><p>{provider === 'gemini' ? tr('What would you like to ask Gemini?') : selectedAgent ? tr('What would you like me to assign to @{name}?', { name: selectedAgent.name }) : tr('Choose an MCP agent to start the conversation.')}</p><small>{provider === 'gemini' ? tr('Your request will be sent to Gemini and the response will be captured directly in ChatCMD.') : tr('Your request will be sent through ChatGPT and the agent will perform the work in ChatCMD.')}</small></div>
         </div>
         {(content.trim() || textAttachments.length > 0) && <div className="chatgpt-user-message"><div>{content.trim() ? content : effectiveContent}</div></div>}
       </div>
@@ -168,10 +171,10 @@ export function NewChatGptConversation() {
       <form className="chatgpt-chat-composer" onSubmit={(event) => void submit(event)}>
         {error && <p className="chatgpt-form-error" role="alert"><CircleAlert />{error}</p>}
         <div className="chatgpt-composer-context">
-          <label className="chatgpt-agent-picker chatgpt-composer-agent"><span>{tr('MCP agent')}</span><select value={agentId} onChange={(event) => selectAgent(event.target.value)} disabled={busy || agents.loading} required>
+          {provider !== 'gemini' && <label className="chatgpt-agent-picker chatgpt-composer-agent"><span>{tr('MCP agent')}</span><select value={agentId} onChange={(event) => selectAgent(event.target.value)} disabled={busy || agents.loading} required>
             {!enabledAgents.length && <option value="">{tr('No enabled agent')}</option>}
             {enabledAgents.map((agent) => <option value={agent.id} key={agent.id}>@{agent.name}</option>)}
-          </select></label>
+          </select></label>}
           <div className="chatgpt-folder-picker">
             <span>{tr('Project folder')}</span>
             <div className="chatgpt-folder-picker-control">
@@ -182,6 +185,13 @@ export function NewChatGptConversation() {
             </div>
           </div>
           <div className="chatgpt-model-picker">
+             <span>Provider</span>
+             <select value={provider} onChange={(event) => setProvider(event.target.value as 'chatgpt' | 'gemini')} disabled={busy}>
+               <option value="chatgpt">ChatGPT</option>
+               <option value="gemini">Gemini</option>
+             </select>
+           </div>
+           {provider !== 'gemini' && <div className="chatgpt-model-picker">
             <span>{tr('Model')}</span>
             <div className="chatgpt-model-picker-row">
               <button className="chatgpt-model-select" type="button" onClick={() => void chooseModel()} disabled={busy || modelTabOpening}>
@@ -189,16 +199,16 @@ export function NewChatGptConversation() {
               </button>
               <small>{tr('Stronger models can take longer to complete the request.')}</small>
             </div>
-          </div>
+          </div>}
         </div>
         {textAttachments.length > 0 && <div className="chatgpt-message-attachments" aria-label={tr('Text files from clipboard')}>
           {textAttachments.map((attachment) => <span key={attachment.id} title={tr('{name} · {count} characters', { name: attachment.name, count: attachment.content.length.toLocaleString() })}><FileText />{attachment.name}<button type="button" aria-label={tr('Remove file {name}', { name: attachment.name })} onClick={() => setTextAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X /></button></span>)}
         </div>}
         <div className="chatgpt-chat-input-wrap">
-          <textarea rows={3} value={content} onChange={(event) => setContent(event.target.value)} onPaste={handlePaste} disabled={busy} placeholder={tr('Enter a request for ChatGPT…')} />
-          <button className="chatgpt-chat-send" type="submit" aria-label={tr('Send to ChatGPT')} disabled={busy || !agentId || !effectiveContent || extensionReady === false}>{busy ? <LoaderCircle className="spin" /> : <Send />}</button>
+          <textarea rows={3} value={content} onChange={(event) => setContent(event.target.value)} onPaste={handlePaste} disabled={busy} placeholder={provider === 'gemini' ? tr('Enter a request for Gemini…') : tr('Enter a request for ChatGPT…')} />
+          <button className="chatgpt-chat-send" type="submit" aria-label={provider === 'gemini' ? tr('Send to Gemini') : tr('Send to ChatGPT')} disabled={busy || !agentId || !effectiveContent || extensionReady === false}>{busy ? <LoaderCircle className="spin" /> : <Send />}</button>
         </div>
-        <div className="chatgpt-chat-composer-meta"><span>{selectedAgent ? tr('Send to @{name}', { name: selectedAgent.name }) : tr('No enabled agent')}</span><span><ShieldCheck />{tr('Actual message')}: <code>{selectedPrompt(enabledAgents, agentId, projectFolder, effectiveContent)}</code></span></div>
+        <div className="chatgpt-chat-composer-meta"><span>{provider === 'gemini' ? tr('Direct Gemini Web Bridge') : selectedAgent ? tr('Send to @{name}', { name: selectedAgent.name }) : tr('No enabled agent')}</span><span><ShieldCheck />{tr('Actual message')}: <code>{provider === 'gemini' ? (effectiveContent || '…') : selectedPrompt(enabledAgents, agentId, projectFolder, effectiveContent)}</code></span></div>
       </form>
     </section>
     {folderMenuOpen && <Modal className="workspace-folder-modal" title={tr('Choose project folder')} description={tr('Choose a saved project or open the folder picker on this computer.')} close={() => !folderPicking && setFolderMenuOpen(false)}><div className="workspace-folder-choices"><div className="workspace-folder-project-list">{projects.loading ? <p className="workspace-folder-empty"><LoaderCircle className="spin" /> {tr('Loading projects…')}</p> : projects.data?.length ? projects.data.map((project) => <button className={`workspace-folder-project ${canonicalProjectPath(projectFolder) === canonicalProjectPath(project.path) ? 'selected' : ''}`} type="button" onClick={() => { setProjectFolderFromUser(project.path); setFolderMenuOpen(false); }} key={project.id}><strong>{project.name}</strong><small>{project.path}</small></button>) : <p className="workspace-folder-empty">{projects.error || tr('No saved projects yet.')}</p>}</div><button className="workspace-folder-browse" type="button" onClick={() => void pickFolder()} disabled={folderPicking}>{folderPicking ? <LoaderCircle className="spin" /> : <FolderOpen />}<span><strong>{tr('Choose folder')}</strong><small>{tr('Open the folder picker on this computer')}</small></span></button></div></Modal>}
@@ -222,7 +232,8 @@ export function ChatGptTaskCard({ taskId }: { taskId: string }) {
     return () => window.clearInterval(timer);
   }, [bridge.data?.conversationUrl, refreshBridge]);
   if (!bridge.data) return null;
-  return <section className="task-info-section chatgpt-task-card"><strong>ChatGPT.com</strong><div><Bot /><span><b>{bridge.data.model}</b><small>{bridge.data.conversationId || tr('Syncing conversation ID…')}</small></span></div>{bridge.data.conversationUrl && <a href={bridge.data.conversationUrl} target="_blank" rel="noreferrer noopener"><ExternalLink />{tr('Open original conversation')}</a>}</section>;
+  const isGemini = bridge.data.conversationUrl?.startsWith('https://gemini.google.com/');
+  return <section className="task-info-section chatgpt-task-card"><strong>{isGemini ? 'Gemini.google.com' : 'ChatGPT.com'}</strong><div><Bot /><span><b>{bridge.data.model}</b><small>{bridge.data.conversationId || tr('Syncing conversation ID…')}</small></span></div>{bridge.data.conversationUrl && <a href={bridge.data.conversationUrl} target="_blank" rel="noreferrer noopener"><ExternalLink />{tr('Open original conversation')}</a>}</section>;
 }
 
 function ExtensionState({ ready }: { ready: boolean | null }) {

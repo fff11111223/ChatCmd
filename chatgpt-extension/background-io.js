@@ -329,13 +329,22 @@ async function conversationTarget(value) {
 function conversationIdFromUrl(value) {
   try {
     const url = new URL(value);
-    if (url.origin !== 'https://chatgpt.com') return null;
-    const id = url.pathname.match(/(?:^|\/)c\/([^/?#]+)/)?.[1];
-    return id ? decodeURIComponent(id) : null;
+    if (url.origin === 'https://chatgpt.com') {
+      const id = url.pathname.match(/(?:^|\/)c\/([^/?#]+)/)?.[1];
+      return id ? decodeURIComponent(id) : null;
+    }
+    if (url.origin === 'https://gemini.google.com') {
+      const id = url.pathname.match(/(?:^|\/)app\/([^/?#]+)/)?.[1];
+      return id ? decodeURIComponent(id) : null;
+    }
+    return null;
   } catch { return null; }
 }
 
 function sameConversationUrl(left, right) {
+  try {
+    if (new URL(left || '').origin !== new URL(right || '').origin) return false;
+  } catch { return false; }
   const leftId = conversationIdFromUrl(left || '');
   const rightId = conversationIdFromUrl(right || '');
   return Boolean(leftId && rightId && leftId === rightId);
@@ -364,7 +373,8 @@ function isChatGptUrl(value) {
 }
 
 function isProvisionalConversationId(value) {
-  return /^WEB:/i.test(String(value || ''));
+  const s = String(value || '').trim().toUpperCase();
+  return s.startsWith('WEB:') || s === 'GEMINI:/APP' || s === 'GEMINI:/APP/' || s === 'GEMINI:' || s === 'GEMINI:/';
 }
 
 function localOrigin(value) {

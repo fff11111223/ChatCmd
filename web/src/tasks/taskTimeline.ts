@@ -159,8 +159,10 @@ export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
   return blocks.filter((block) => block.type === 'progress' || block.activities.length > 0);
 }
 
+const isBrowserProvider = (provider: unknown) => provider === 'chatgpt_web' || provider === 'gemini_web';
+
 export function findUserMessage(events: TimelineEvent[]) {
-  const ordered = [...events.filter((event) => payloadObject(event).provider !== 'chatgpt_web'), ...events.filter((event) => payloadObject(event).provider === 'chatgpt_web')];
+  const ordered = [...events.filter((event) => !isBrowserProvider(payloadObject(event).provider)), ...events.filter((event) => isBrowserProvider(payloadObject(event).provider))];
   for (const event of ordered) {
     const payload = payloadObject(event);
     if (event.type !== 'message' || stringValue(payload.role) !== 'user') continue;
@@ -171,7 +173,7 @@ export function findUserMessage(events: TimelineEvent[]) {
 }
 
 export function findCompletionSignal(events: TimelineEvent[]) {
-  const ordered = [...events.filter((event) => payloadObject(event).provider === 'chatgpt_web'), ...events.filter((event) => payloadObject(event).provider !== 'chatgpt_web')];
+  const ordered = [...events.filter((event) => isBrowserProvider(payloadObject(event).provider)), ...events.filter((event) => !isBrowserProvider(payloadObject(event).provider))];
   for (let index = ordered.length - 1; index >= 0; index--) {
     const event = ordered[index];
     const payload = payloadObject(event);

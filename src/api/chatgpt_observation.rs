@@ -105,9 +105,13 @@ pub(super) fn validate_identity(id: &str, url: &str) -> Result<(), Problem> {
         .collect::<Vec<_>>();
     let segment = match path.as_slice() {
         ["", "c", value] | ["", "g", _, "c", value] => Some(*value),
+        ["", "app", value] if url.starts_with("https://gemini.google.com/") => Some(*value),
         _ => None,
     };
-    if segment.and_then(decode_url_segment).as_deref() != Some(id) {
+    let matched = segment
+        .and_then(decode_url_segment)
+        .is_some_and(|decoded| decoded == id || id == format!("GEMINI:/app/{decoded}"));
+    if !matched {
         return Err(Problem::new(
             StatusCode::BAD_REQUEST,
             "ChatGPT identity mismatch",
@@ -166,6 +170,7 @@ pub(super) async fn persist_observation(
         ));
     }
     let submitted = row.get::<String, _>("submitted_content");
+    let provider = super::chatgpt_support::browser_provider(&input.conversation_url);
     let created_at = row.get::<i64, _>("created_at_ms");
     let mcp_turn =
         chatgpt_transcript::mcp_turn(&mut tx, &task_id, request_id, created_at, &submitted)
@@ -177,7 +182,7 @@ pub(super) async fn persist_observation(
         .map_err(db_problem)?;
     let user_id = format!("chatgpt-user-{request_id}");
     let user_payload = json!({"role":"user","content":row.get::<String,_>("user_content"),
-        "submittedContent":submitted,"provider":"chatgpt_web","bridgeRequestId":request_id});
+        "submittedContent":submitted,"provider":provider,"bridgeRequestId":request_id});
     let inserted_user = if mcp_turn.is_none() {
         sqlx::query("INSERT OR IGNORE INTO timeline_events(event_id,task_id,turn_id,actor,kind,idempotency_key,payload_json,created_at_ms) VALUES(?,?,?,'user','message',?,?,?)")
             .bind(&user_id).bind(&task_id).bind(&turn_id).bind(&user_id).bind(user_payload.to_string()).bind(created_at)
@@ -186,7 +191,7 @@ pub(super) async fn persist_observation(
         false
     };
     let event_id = format!("chatgpt-think-{request_id}");
-    let payload = json!({"provider":"chatgpt_web","source":"chatgpt","bridgeRequestId":request_id,
+    let payload = json!({"provider":provider,"source":if provider == "gemini_web" { "gemini" } else { "chatgpt" },"bridgeRequestId":request_id,
         "browserUserId":input.user_message_id,"revision":input.revision,"messages":input.messages,"completed":input.completed,
         "requestCreatedAtMs":created_at,"observedAtMs":now_ms()});
     let changed = sqlx::query("INSERT INTO timeline_events(event_id,task_id,turn_id,actor,kind,idempotency_key,payload_json,created_at_ms) VALUES(?,?,?,'assistant','chatgpt_think',?,?,?) ON CONFLICT(event_id) DO UPDATE SET turn_id=excluded.turn_id,payload_json=excluded.payload_json WHERE COALESCE(json_extract(timeline_events.payload_json,'$.revision'),0)<json_extract(excluded.payload_json,'$.revision') AND (COALESCE(json_extract(timeline_events.payload_json,'$.completed'),0)=0 OR json_extract(excluded.payload_json,'$.completed')=1)")

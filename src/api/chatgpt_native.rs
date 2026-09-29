@@ -92,13 +92,23 @@ pub(super) async fn enroll(
         .bind(&input.conversation_id).bind(&scope).bind(&input.conversation_id)
         .fetch_all(&mut *tx).await.map_err(db_problem)?;
     let now = now_ms();
+    let source = if input.conversation_url.starts_with("https://gemini.google.com/") {
+        "gemini_web"
+    } else {
+        "chatgpt_web"
+    };
+    let (recorder_id, recorder_name) = if source == "gemini_web" {
+        ("gemini-web-agent", "Gemini Web")
+    } else {
+        (RECORDER_AGENT_ID, RECORDER_AGENT_NAME)
+    };
     let (task_id, agent_id) = if let Some(row) = bound.first() {
         (row.get::<String, _>("id"), row.get::<String, _>("agent_id"))
     } else {
         // Recorder-only identity has no published secret and no tool permissions. Recording
         // public text must never grant execution or silently pick an unrelated MCP agent.
         sqlx::query("INSERT INTO mcp_agents(id,name,secret_hash,secret_last4,enabled,created_at_ms,updated_at_ms) VALUES(?,?,randomblob(32),'none',0,?,?) ON CONFLICT(id) DO NOTHING")
-            .bind(RECORDER_AGENT_ID).bind(RECORDER_AGENT_NAME).bind(now).bind(now)
+            .bind(recorder_id).bind(recorder_name).bind(now).bind(now)
             .execute(&mut *tx).await.map_err(db_problem)?;
         let task = format!(
             "task-chat-{}",
@@ -107,11 +117,11 @@ pub(super) async fn enroll(
                 format!("browser-conversation\0{}", input.conversation_id).as_bytes()
             )
         );
-        sqlx::query("INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,allow_execute,status,generation,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,'chatgpt_web',0,'running',1,?,?) ON CONFLICT(id) DO NOTHING")
-            .bind(&task).bind(RECORDER_AGENT_ID).bind(device_id).bind(&scope)
-            .bind(compact_title(&input.content)).bind(now).bind(now)
+        sqlx::query("INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,allow_execute,status,generation,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,0,'running',1,?,?) ON CONFLICT(id) DO NOTHING")
+            .bind(&task).bind(recorder_id).bind(device_id).bind(&scope)
+            .bind(compact_title(&input.content)).bind(source).bind(now).bind(now)
             .execute(&mut *tx).await.map_err(db_problem)?;
-        (task, RECORDER_AGENT_ID.to_owned())
+        (task, recorder_id.to_owned())
     };
     let turn_id = format!("chatgpt-turn-{id}");
     sqlx::query("INSERT INTO chatgpt_bridge_requests(id,task_id,turn_id,agent_id,model,user_content,submitted_content,status,conversation_id,conversation_url,created_at_ms,updated_at_ms) VALUES(?,?,?,?,'Auto',?,?,'running',?,?,?,?)")
@@ -124,8 +134,8 @@ pub(super) async fn enroll(
     sqlx::query("INSERT INTO chatgpt_conversations(task_id,conversation_id,conversation_url,model,active_request_id,created_at_ms,updated_at_ms) VALUES(?,?,?,'Auto',?,?,?) ON CONFLICT(task_id) DO UPDATE SET active_request_id=excluded.active_request_id,conversation_url=excluded.conversation_url,updated_at_ms=excluded.updated_at_ms")
         .bind(&task_id).bind(&input.conversation_id).bind(&input.conversation_url).bind(&id).bind(now).bind(now)
         .execute(&mut *tx).await.map_err(db_problem)?;
-    sqlx::query("UPDATE tasks SET source='chatgpt_web',status=CASE WHEN status='stopped' THEN status ELSE 'running' END,updated_at_ms=? WHERE id=?")
-        .bind(now).bind(&task_id).execute(&mut *tx).await.map_err(db_problem)?;
+    sqlx::query("UPDATE tasks SET source=?,status=CASE WHEN status='stopped' THEN status ELSE 'running' END,updated_at_ms=? WHERE id=?")
+        .bind(source).bind(now).bind(&task_id).execute(&mut *tx).await.map_err(db_problem)?;
     tx.commit().await.map_err(db_problem)?;
     Ok(id)
 }

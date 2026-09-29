@@ -15,6 +15,7 @@ import { compactText } from './compact/copy';
 import { prepareChatGptMessage } from './messageAttachments';
 import { fileAttachmentPayloads, messageContentWithTextAttachments, textAttachmentFromPaste, type ChatGptTextAttachment } from './pasteAttachments';
 const DEFAULT_MODEL = 'Auto';
+const DEFAULT_PROVIDER = 'chatgpt' as const;
 
 export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
   const bridge = useLoad(() => api.chatGptBridge(taskId), [taskId]);
@@ -49,6 +50,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     previousExtensionReady.current = extensionReady;
   }, [extensionReady, resumeCompact]);
   const conversationUrl = bridge.data?.conversationUrl || undefined;
+  const provider: 'chatgpt' | 'gemini' = conversationUrl?.startsWith('https://gemini.google.com/') ? 'gemini' : DEFAULT_PROVIDER;
   const active = Boolean(bridge.data?.activeRequestId && ['queued', 'running', 'stop_requested'].includes(bridge.data.activeStatus ?? ''));
   const answerCompletedWaitingForUi = active && bridge.data?.taskStatus === 'completed' && chatGptReady !== true;
 
@@ -57,7 +59,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     const refresh = () => {
       const conversationUrl = bridge.data?.conversationUrl;
       if (!conversationUrl) return;
-      void chatGptExtensionStatus(conversationUrl).then((status) => {
+      void chatGptExtensionStatus(conversationUrl, provider).then((status) => {
         if (disposed) return;
         setExtensionReady(status.ready);
         setChatGptTabOpen(status.ready && status.conversationTabOpen);
@@ -147,7 +149,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     setBusy(true); setError('');
     try {
       if (!conversationUrl) throw new Error(tr('ChatGPT conversation identity is still syncing.'));
-      const status = await chatGptExtensionStatus(conversationUrl);
+      const status = await chatGptExtensionStatus(conversationUrl, provider);
       setExtensionReady(status.ready);
       setChatGptTabOpen(status.ready && status.conversationTabOpen);
       setChatGptReady(status.ready && status.conversationTabOpen && status.conversationReady);
@@ -156,7 +158,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
       if (!status.conversationReady) throw new Error(tr('ChatGPT is not ready for another message yet.'));
       if (compact?.isBlocked() || bridgeSync) return false;
       const request = await api.sendChatGptMessage(taskId, { model: DEFAULT_MODEL, content: message });
-      await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model, conversationUrl, attachments: fileAttachmentPayloads(fileAttachments) });
+      await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model, provider, conversationUrl, attachments: fileAttachmentPayloads(fileAttachments) });
       const latest = await waitForDispatchState(request.id);
       if (latest.status === 'failed') throw new Error(latest.errorMessage || tr('Could not send the message to ChatGPT.'));
       if (clearComposer) setContent('');
@@ -219,19 +221,20 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
   };
 
   const recoveryError = bridge.error || syncError;
+  const isGemini = provider === 'gemini';
   const connectionNotice = bridge.loading
-    ? <div className="chatgpt-composer loading"><LoaderCircle className="spin" /><span>{tr('Loading ChatGPT bridge…')}</span></div>
+    ? <div className="chatgpt-composer loading"><LoaderCircle className="spin" /><span>{isGemini ? tr('Loading Gemini bridge…') : tr('Loading ChatGPT bridge…')}</span></div>
     : !bridge.data
-      ? <div className="chatgpt-composer error" role="alert"><CircleAlert /><span>{bridge.error || tr('ChatGPT bridge information is unavailable.')}</span></div>
+      ? <div className="chatgpt-composer error" role="alert"><CircleAlert /><span>{bridge.error || (isGemini ? tr('Gemini bridge information is unavailable.') : tr('ChatGPT bridge information is unavailable.'))}</span></div>
       : !conversationUrl
-        ? <div className={`chatgpt-composer ${recoveryError ? 'error' : 'loading'}`} role={recoveryError ? 'alert' : 'status'}>{recoveryError ? <CircleAlert /> : <LoaderCircle className="spin" />}<span>{recoveryError || tr('ChatGPT conversation identity is still syncing.')}</span></div>
+        ? <div className={`chatgpt-composer ${recoveryError ? 'error' : 'loading'}`} role={recoveryError ? 'alert' : 'status'}>{recoveryError ? <CircleAlert /> : <LoaderCircle className="spin" />}<span>{recoveryError || (isGemini ? tr('Gemini conversation identity is still syncing.') : tr('ChatGPT conversation identity is still syncing.'))}</span></div>
         : extensionReady === false
-          ? <div className="chatgpt-tab-required error" role="alert"><Unplug /><div><strong>{tr('Could not connect to ChatGPT Bridge')}</strong><span>{tr('Enable or reload the extension, then return to this conversation.')}</span></div></div>
+          ? <div className="chatgpt-tab-required error" role="alert"><Unplug /><div><strong>{isGemini ? tr('Could not connect to Gemini Bridge') : tr('Could not connect to ChatGPT Bridge')}</strong><span>{tr('Enable or reload the extension, then return to this conversation.')}</span></div></div>
           : chatGptTabOpen === false
-            ? <div className="chatgpt-tab-required" role="alert"><CircleAlert /><div><strong>{tr('This conversation’s ChatGPT tab is closed')}</strong><span>{tr('ChatCMD must keep this exact ChatGPT tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.')}</span><button type="button" onClick={() => void openTab()} disabled={busy || compactPaused || bridgeSync}><ExternalLink />{tr('Open ChatGPT conversation')}</button></div></div>
+            ? <div className="chatgpt-tab-required" role="alert"><CircleAlert /><div><strong>{isGemini ? tr('This conversation’s Gemini tab is closed') : tr('This conversation’s ChatGPT tab is closed')}</strong><span>{isGemini ? tr('ChatCMD must keep this exact Gemini tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.') : tr('ChatCMD must keep this exact ChatGPT tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.')}</span><button type="button" onClick={() => void openTab()} disabled={busy || compactPaused || bridgeSync}><ExternalLink />{isGemini ? tr('Open Gemini conversation') : tr('Open ChatGPT conversation')}</button></div></div>
             : bridgeSync ? <p role="status">{compactText('bridgeSync')}</p> : null;
   return <>
-    <CompactStatusCard />
+    {!isGemini && <CompactStatusCard />}
     {connectionNotice}
     <ChatGptMessageQueuePanel
       taskId={taskId}
@@ -250,18 +253,17 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
         {textAttachments.map((attachment) => <span key={attachment.id} title={tr('{name} · {count} characters', { name: attachment.name, count: attachment.content.length.toLocaleString() })}><FileText />{attachment.name}<button type="button" aria-label={tr('Remove file {name}', { name: attachment.name })} onClick={() => setTextAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X /></button></span>)}
       </div>}
       <div className="chatgpt-composer-row">
-        <textarea aria-label={tr('Next message to ChatGPT')} rows={2} value={content} onChange={(event) => setContent(event.target.value)} onPaste={handlePaste} disabled={active || busy || compactPaused || bridgeSync || extensionReady === false || chatGptTabOpen === false} placeholder={answerCompletedWaitingForUi ? tr('Answer completed; waiting for the ChatGPT UI before continuing.') : active ? tr('ChatGPT is responding…') : tr('Continue the ChatGPT conversation…')} />
+        <textarea aria-label={isGemini ? tr('Next message to Gemini') : tr('Next message to ChatGPT')} rows={2} value={content} onChange={(event) => setContent(event.target.value)} onPaste={handlePaste} disabled={active || busy || compactPaused || bridgeSync || extensionReady === false || chatGptTabOpen === false} placeholder={answerCompletedWaitingForUi ? (isGemini ? tr('Answer completed; waiting for the Gemini UI before continuing.') : tr('Answer completed; waiting for the ChatGPT UI before continuing.')) : active ? (isGemini ? tr('Gemini is responding…') : tr('ChatGPT is responding…')) : (isGemini ? tr('Continue the Gemini conversation…') : tr('Continue the ChatGPT conversation…'))} />
         {active ? <button type="button" className="chatgpt-stop-button" onClick={() => void stop()} disabled={busy || compactPaused || bridgeSync || bridge.data?.activeStatus === 'stop_requested'}><CircleStop /><span>{bridge.data?.activeStatus === 'stop_requested' ? tr('Stopping…') : tr('Stop')}</span></button>
           : <button type="submit" className="chatgpt-composer-send" disabled={busy || compactPaused || bridgeSync || extensionReady !== true || chatGptTabOpen !== true || chatGptReady !== true || (!content.trim() && textAttachments.length === 0)}><Send /><span>{tr('Send')}</span></button>}
       </div>
       <div className="chatgpt-composer-meta chatgpt-composer-actions">
         <button type="button" onClick={() => void closeTab()} disabled={busy || compactPaused || bridgeSync}>{tr('Close this tab')}</button><span aria-hidden="true">|</span>
-        <button type="button" onClick={() => void focusTab()} disabled={busy || compactPaused || bridgeSync}>{tr('Change model')}</button><span aria-hidden="true">|</span>
+        <button type="button" onClick={() => void focusTab()} disabled={busy || compactPaused || bridgeSync}>{isGemini ? tr('Focus Gemini tab') : tr('Change model')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => setQueueMode('queued')} disabled={busy || compactPaused || bridgeSync}>{tr('Queue another message')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => setQueueMode('immediate')} disabled={busy || compactPaused || bridgeSync}>{tr('Send immediate message')}</button><span aria-hidden="true">|</span>
-        <button type="button" onClick={() => { setFolderMenuOpen(true); void projects.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach project')}</button><span aria-hidden="true">|</span>
-        <button type="button" onClick={() => { setPluginMenuOpen(true); void agents.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach plugin')}</button>
-        <span aria-hidden="true">|</span><CompactAction disabled={busy || bridgeSync || !conversationUrl} />
+        <button type="button" onClick={() => { setFolderMenuOpen(true); void projects.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach project')}</button>
+        {!isGemini && <><span aria-hidden="true">|</span><button type="button" onClick={() => { setPluginMenuOpen(true); void agents.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach plugin')}</button><span aria-hidden="true">|</span><CompactAction disabled={busy || bridgeSync || !conversationUrl} /></>}
       </div>
       {error && <p className="chatgpt-form-error" role="alert"><CircleAlert />{error}</p>}
     </form>

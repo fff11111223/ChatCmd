@@ -157,8 +157,20 @@ pub(super) async fn append_user_message(
     content: &str,
     submitted: &str,
 ) -> Result<(), Problem> {
+    append_user_message_with_provider(state, task_id, turn_id, request_id, content, submitted, "chatgpt_web").await
+}
+
+pub(super) async fn append_user_message_with_provider(
+    state: &Arc<AppState>,
+    task_id: &str,
+    turn_id: &str,
+    request_id: &str,
+    content: &str,
+    submitted: &str,
+    provider: &str,
+) -> Result<(), Problem> {
     let event_id = format!("chatgpt-user-{request_id}");
-    let payload = json!({"role":"user","content":content,"submittedContent":submitted,"provider":"chatgpt_web"});
+    let payload = json!({"role":"user","content":content,"submittedContent":submitted,"provider":provider});
     let changed = sqlx::query("INSERT OR IGNORE INTO timeline_events(event_id,task_id,turn_id,session_id,actor,kind,idempotency_key,payload_json,metadata_json,created_at_ms) VALUES(?,?,?,NULL,'user','message',?,?,NULL,?)")
         .bind(&event_id)
         .bind(task_id)
@@ -184,8 +196,20 @@ pub(super) async fn append_status(
     status: &str,
     content: &str,
 ) -> Result<(), Problem> {
+    append_status_with_provider(state, task_id, turn_id, request_id, status, content, "chatgpt_web").await
+}
+
+pub(super) async fn append_status_with_provider(
+    state: &Arc<AppState>,
+    task_id: &str,
+    turn_id: &str,
+    request_id: &str,
+    status: &str,
+    content: &str,
+    provider: &str,
+) -> Result<(), Problem> {
     let event_id = format!("chatgpt-result-{request_id}");
-    let payload = json!({"status":status,"content":content,"provider":"chatgpt_web"});
+    let payload = json!({"status":status,"content":content,"provider":provider});
     let changed = sqlx::query("INSERT OR IGNORE INTO timeline_events(event_id,task_id,turn_id,session_id,actor,kind,idempotency_key,payload_json,metadata_json,created_at_ms) VALUES(?,?,?,NULL,'assistant','status',?,?,NULL,?)")
         .bind(&event_id)
         .bind(task_id)
@@ -240,7 +264,7 @@ pub(super) async fn guard_conversation_binding(
         return Ok(());
     };
     if existing == incoming
-        || (is_provisional_conversation_id(&existing) && !is_provisional_conversation_id(incoming))
+        || is_provisional_conversation_id(&existing)
     {
         return Ok(());
     }
@@ -263,13 +287,15 @@ pub(super) fn validate_message(content: &str) -> Result<(), Problem> {
     Ok(())
 }
 
+pub(super) fn browser_provider(url: &str) -> &'static str { if url.starts_with("https://gemini.google.com/") { "gemini_web" } else { "chatgpt_web" } }
+
 pub(super) fn validate_conversation(id: &str, url: &str) -> Result<(), Problem> {
     let id = id.trim();
     let url = url.trim();
     if id.is_empty()
         || id.len() > 500
         || url.len() > 2_000
-        || !url.starts_with("https://chatgpt.com/")
+        || !(url.starts_with("https://chatgpt.com/") || url.starts_with("https://gemini.google.com/"))
     {
         return Err(Problem::new(
             StatusCode::BAD_REQUEST,
@@ -281,7 +307,12 @@ pub(super) fn validate_conversation(id: &str, url: &str) -> Result<(), Problem> 
 }
 
 pub(super) fn is_provisional_conversation_id(id: &str) -> bool {
-    id.trim().to_ascii_uppercase().starts_with("WEB:")
+    let trimmed = id.trim().to_ascii_uppercase();
+    trimmed.starts_with("WEB:")
+        || trimmed == "GEMINI:/APP"
+        || trimmed == "GEMINI:/APP/"
+        || trimmed == "GEMINI:"
+        || trimmed == "GEMINI:/"
 }
 
 pub(super) fn normalize_model(value: Option<&str>) -> String {
@@ -342,7 +373,7 @@ mod tests {
     fn wrapped_message_includes_trimmed_project_folder() {
         let message = wrapped_message("worker", Some(" D:\\DEV\\Dotty "), "Kiểm tra");
 
-        assert!(message.contains("Thư mục dự án: D:\\DEV\\Dotty"));
+        assert!(message.contains("Project folder: D:\\DEV\\Dotty"));
     }
 }
 

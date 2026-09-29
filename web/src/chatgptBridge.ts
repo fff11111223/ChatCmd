@@ -8,14 +8,14 @@ export const REQUIRED_CHATGPT_EXTENSION_VERSION = '0.1.12';
 
 type BridgeCommand =
   | { action: 'compact-resume'; nonce: string; jobId: string; taskId: string; localBaseUrl: string }
-  | { action: 'ping'; nonce: string; conversationUrl?: string; approvalSoundEnabled: boolean }
+  | { action: 'ping'; nonce: string; conversationUrl?: string; provider?: 'chatgpt' | 'gemini'; approvalSoundEnabled: boolean }
   | { action: 'prepare-tab'; nonce: string; newConversationUrl?: string }
   | { action: 'open-tab'; nonce: string; conversationUrl: string }
   | { action: 'focus-tab'; nonce: string; conversationUrl: string }
   | { action: 'close-tab'; nonce: string; conversationUrl: string }
   | { action: 'logs'; nonce: string }
   | { action: 'clear-logs'; nonce: string }
-  | { action: 'send'; nonce: string; requestId: string; submittedContent: string; model: string; conversationUrl?: string; newConversationUrl?: string; attachments?: ChatGptFileAttachmentPayload[]; localBaseUrl: string }
+  | { action: 'send'; nonce: string; requestId: string; submittedContent: string; model: string; provider?: 'chatgpt' | 'gemini'; conversationUrl?: string; newConversationUrl?: string; attachments?: ChatGptFileAttachmentPayload[]; localBaseUrl: string }
   | { action: 'subagent-send'; nonce: string; subagentId: string; childTaskId: string; submittedContent: string; attempt: number; model: string; conversationUrl?: string; newConversationUrl?: string; localBaseUrl: string }
   | { action: 'subagent-close'; nonce: string; subagentId: string }
   | { action: 'stop'; nonce: string; requestId: string; localBaseUrl: string }
@@ -26,9 +26,9 @@ export type ChatGptExtensionLog = { at: string; level: 'info' | 'warn' | 'error'
 type BridgeResponse = { nonce: string; ok: boolean; recovered?: boolean; reason?: string; error?: string; model?: string; logs?: ChatGptExtensionLog[]; extensionVersion?: string; chatGptTabOpen?: boolean; conversationTabOpen?: boolean; conversationReady?: boolean; tabId?: number; tabUrl?: string };
 export type ChatGptExtensionStatus = { ready: boolean; extensionVersion?: string; chatGptTabOpen: boolean; conversationTabOpen: boolean; conversationReady: boolean; tabId?: number; tabUrl?: string };
 
-export async function chatGptExtensionStatus(conversationUrl?: string): Promise<ChatGptExtensionStatus> {
+export async function chatGptExtensionStatus(conversationUrl?: string, provider?: 'chatgpt' | 'gemini'): Promise<ChatGptExtensionStatus> {
   try {
-    const response = await bridge({ action: 'ping', nonce: nonce(), conversationUrl, approvalSoundEnabled: approvalSoundPreference() }, 1_500);
+    const response = await bridge({ action: 'ping', nonce: nonce(), conversationUrl, provider, approvalSoundEnabled: approvalSoundPreference() }, 1_500);
     return {
       ready: true,
       extensionVersion: response.extensionVersion,
@@ -72,7 +72,7 @@ export async function clearChatGptExtensionLogs() {
   await bridge({ action: 'clear-logs', nonce: nonce() }, 2_000);
 }
 
-export async function dispatchChatGptRequest(input: { requestId: string; submittedContent: string; model: string; conversationUrl?: string; newConversationUrl?: string; attachments?: ChatGptFileAttachmentPayload[] }) {
+export async function dispatchChatGptRequest(input: { requestId: string; submittedContent: string; model: string; provider?: 'chatgpt' | 'gemini'; conversationUrl?: string; newConversationUrl?: string; attachments?: ChatGptFileAttachmentPayload[] }) {
   await bridge({ action: 'send', nonce: nonce(), ...input, localBaseUrl: window.location.origin }, 5_000);
 }
 

@@ -276,10 +276,11 @@ function mergeSubagentPreviewSnapshot(next: TaskDetail, current: TaskDetail) {
 function SubagentPreviewBody({ detail }: { detail: TaskDetail }) {
   const events = detail.events ?? [];
   const turns = detail.turns?.length ? detail.turns : buildTaskTurns(events, detail.task);
+  const isGemini = detail.task.source === 'gemini_web';
   const chatGpt = detail.task.source === 'chatgpt_web';
   if (!turns.length) return <div className="subagent-preview-state" role="status"><MessageSquareText aria-hidden="true" /><span>{tr('Agent processing, tools, and conclusions will appear here.')}</span></div>;
   return <section className="task-bubble-timeline turn-timeline subagent-preview-timeline" aria-label={tr('Conversation activity')}>
-    {turns.map((turn) => <TaskTurnBubble turn={turn} taskId={detail.task.id} agentLabel={chatGpt ? 'ChatGPT' : tr('Codex Agent')} subagents={(detail.subagents ?? []).filter((child) => (child.rootTurnId ?? child.parentTurnId) === turn.id)} key={turn.id} />)}
+    {turns.map((turn) => <TaskTurnBubble turn={turn} taskId={detail.task.id} agentLabel={isGemini ? 'Gemini' : chatGpt ? 'ChatGPT' : tr('Codex Agent')} subagents={(detail.subagents ?? []).filter((child) => (child.rootTurnId ?? child.parentTurnId) === turn.id)} key={turn.id} />)}
   </section>;
 }
 

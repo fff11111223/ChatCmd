@@ -3,11 +3,11 @@
 const captureCapabilities = new Map();
 async function handleNativeTurn(message, sender) {
   const tabId = sender.tab?.id;
-  if (!tabId || (sender.frameId !== undefined && sender.frameId !== 0)) throw new Error('Native capture requires the top-level ChatGPT tab.');
+  if (!tabId || (sender.frameId !== undefined && sender.frameId !== 0)) throw new Error('Native capture requires the top-level tab.');
   const tab = await safeTab(tabId);
   const id = conversationIdFromUrl(tab?.url || '');
   if (!id || id !== message.conversationId || conversationIdFromUrl(message.conversationUrl || '') !== id) {
-    throw new Error('The ChatGPT conversation changed before capture.');
+    throw new Error('The conversation changed before capture.');
   }
   if (globalThis.ChatCmdCompactProtocol?.parse(message.content)
       || (typeof compactOwnsTab === 'function' && await compactOwnsTab(tabId, id))) return { ignored: true };
@@ -37,7 +37,7 @@ async function handleNativeTurn(message, sender) {
   });
   if (!request?.id || request.conversationId !== id) throw new Error('Invalid native capture acknowledgement.');
   // A late HTTP result may be retained in SQLite, but cannot claim the tab after navigation.
-  if (conversationIdFromUrl((await safeTab(tabId))?.url || '') !== id) throw new Error('ChatGPT tab navigated during capture enrollment.');
+  if (conversationIdFromUrl((await safeTab(tabId))?.url || '') !== id) throw new Error('Tab navigated during capture enrollment.');
   await chrome.storage.session.set({ [requestKey(request.id)]: { tabId, localBaseUrl, conversationUrl: tab.url } });
   await bindConversationTab(id, tabId, { requestId: request.id, localBaseUrl });
   return { request };
@@ -50,7 +50,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'chatcmd-capture-diagnostic') {
-    if (!sender.tab?.id || !isChatGptUrl(sender.tab.url)) return false;
+    if (!sender.tab?.id || (!isChatGptUrl(sender.tab.url) && !isGeminiUrl(sender.tab.url))) return false;
     if (message.state === 'error') void logExtension('warn', 'capture', String(message.detail || '').slice(0, 500));
     sendResponse({ ok: true });
   }

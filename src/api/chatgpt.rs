@@ -19,8 +19,11 @@ use super::{Problem, db_problem, now_ms};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateRequest {
+    #[serde(alias = "agent_id", default)]
     agent_id: String,
+    provider: Option<String>,
     model: Option<String>,
+    #[serde(alias = "project_folder")]
     project_folder: Option<String>,
     content: String,
 }
@@ -35,7 +38,9 @@ pub(super) struct ContinueRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct BridgeStarted {
+    #[serde(alias = "conversation_id")]
     conversation_id: String,
+    #[serde(alias = "conversation_url")]
     conversation_url: String,
     model: Option<String>,
 }
@@ -43,7 +48,9 @@ pub(super) struct BridgeStarted {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct BridgeIdentity {
+    #[serde(alias = "conversation_id")]
     conversation_id: String,
+    #[serde(alias = "conversation_url")]
     conversation_url: String,
 }
 
@@ -52,22 +59,41 @@ pub(super) async fn create_request(
     Json(input): Json<CreateRequest>,
 ) -> Result<Json<Value>, Problem> {
     validate_message(&input.content)?;
-    let agent_id = input.agent_id.trim();
-    let agent_name = enabled_agent_name(&state, agent_id).await?;
+    let provider = input.provider.as_deref().unwrap_or("chatgpt");
+    if provider != "chatgpt" && provider != "gemini" {
+        return Err(Problem::new(StatusCode::BAD_REQUEST, "Bad Request", "Unsupported browser provider."));
+    }
+    let (agent_id, agent_name) = if provider == "gemini" && (input.agent_id.trim().is_empty() || input.agent_id.trim() == "gemini-web-agent") {
+        let now = now_ms();
+        sqlx::query("INSERT INTO mcp_agents(id,name,secret_hash,secret_last4,enabled,created_at_ms,updated_at_ms) VALUES('gemini-web-agent','Gemini Web',randomblob(32),'none',0,?,?) ON CONFLICT(id) DO NOTHING")
+            .bind(now).bind(now)
+            .execute(state.repository.pool())
+            .await
+            .map_err(db_problem)?;
+        ("gemini-web-agent".to_string(), "Gemini Web".to_string())
+    } else {
+        let id = input.agent_id.trim();
+        let name = enabled_agent_name(&state, id).await?;
+        (id.to_string(), name)
+    };
     let model = normalize_model(input.model.as_deref());
     let project_folder = input
         .project_folder
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let submitted = wrapped_message(&agent_name, project_folder, input.content.trim());
+    let submitted = if provider == "gemini" {
+        input.content.trim().to_owned()
+    } else {
+        wrapped_message(&agent_name, project_folder, input.content.trim())
+    };
     let now = now_ms();
     let request_id = Uuid::new_v4().to_string();
     let turn_id = format!("chatgpt-turn-{}", Uuid::new_v4());
     sqlx::query("INSERT INTO chatgpt_bridge_requests(id,task_id,turn_id,agent_id,model,user_content,submitted_content,project_folder,status,conversation_id,conversation_url,assistant_content,error_message,created_at_ms,updated_at_ms,completed_at_ms) VALUES(?,NULL,?,?,?,?,?,?,'queued',NULL,NULL,NULL,NULL,?,?,NULL)")
         .bind(&request_id)
         .bind(&turn_id)
-        .bind(agent_id)
+        .bind(&agent_id)
         .bind(&model)
         .bind(input.content.trim())
         .bind(&submitted)
@@ -91,7 +117,7 @@ pub(super) async fn task_bridge(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
 ) -> Result<Json<Value>, Problem> {
-    let row = sqlx::query("SELECT t.id AS task_id,COALESCE(c.conversation_id,r.conversation_id) AS conversation_id,COALESCE(c.conversation_url,r.conversation_url) AS conversation_url,COALESCE(c.model,r.model,'Auto') AS model,CASE WHEN r.status IN ('queued','running','stop_requested') THEN r.id END AS active_request_id,r.id AS latest_request_id,t.status AS task_status,r.status AS active_status,r.submitted_content AS active_submitted_content,r.submitted_content AS latest_submitted_content FROM tasks t LEFT JOIN chatgpt_conversations c ON c.task_id=t.id LEFT JOIN chatgpt_bridge_requests r ON r.id=COALESCE(c.active_request_id,(SELECT id FROM chatgpt_bridge_requests WHERE task_id=t.id ORDER BY updated_at_ms DESC,id DESC LIMIT 1)) WHERE t.id=? AND t.source='chatgpt_web'")
+    let row = sqlx::query("SELECT t.id AS task_id,COALESCE(c.conversation_id,r.conversation_id) AS conversation_id,COALESCE(c.conversation_url,r.conversation_url) AS conversation_url,COALESCE(c.model,r.model,'Auto') AS model,CASE WHEN r.status IN ('queued','running','stop_requested') THEN r.id END AS active_request_id,r.id AS latest_request_id,t.status AS task_status,r.status AS active_status,r.submitted_content AS active_submitted_content,r.submitted_content AS latest_submitted_content FROM tasks t LEFT JOIN chatgpt_conversations c ON c.task_id=t.id LEFT JOIN chatgpt_bridge_requests r ON r.id=COALESCE(c.active_request_id,(SELECT id FROM chatgpt_bridge_requests WHERE task_id=t.id ORDER BY updated_at_ms DESC,id DESC LIMIT 1)) WHERE t.id=? AND t.source IN ('chatgpt_web','gemini_web')")
         .bind(task_id.trim()).fetch_optional(state.repository.pool()).await.map_err(db_problem)?.ok_or_else(not_found_chat)?;
     Ok(Json(json!({
         "taskId": row.get::<String, _>("task_id"), "conversationId": row.get::<Option<String>, _>("conversation_id"),
@@ -301,12 +327,14 @@ pub(super) async fn persist_bridge_started_binding(
             .map_err(db_problem)?;
     }
     guard_conversation_binding(&mut transaction, &task_id, Some(binding.conversation_id)).await?;
-    sqlx::query("INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,allow_execute,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,'chatgpt_web',?,1,'running',NULL,1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET conversation_scope_hash=excluded.conversation_scope_hash,title=COALESCE(tasks.title,excluded.title),source='chatgpt_web',project_folder=CASE WHEN EXISTS(SELECT 1 FROM chatgpt_compact_jobs j WHERE j.task_id=tasks.id AND j.phase='completed') THEN tasks.project_folder ELSE COALESCE(excluded.project_folder,tasks.project_folder) END,allow_execute=CASE WHEN EXISTS(SELECT 1 FROM chatgpt_compact_jobs j WHERE j.task_id=tasks.id AND j.phase='completed') THEN tasks.allow_execute ELSE 1 END,status='running',stopped_at_ms=NULL,updated_at_ms=excluded.updated_at_ms")
+    let source = if binding.conversation_url.starts_with("https://gemini.google.com/") { "gemini_web" } else { "chatgpt_web" };
+    sqlx::query("INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,allow_execute,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,1,'running',NULL,1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET conversation_scope_hash=excluded.conversation_scope_hash,title=COALESCE(tasks.title,excluded.title),source=excluded.source,project_folder=CASE WHEN EXISTS(SELECT 1 FROM chatgpt_compact_jobs j WHERE j.task_id=tasks.id AND j.phase='completed') THEN tasks.project_folder ELSE COALESCE(excluded.project_folder,tasks.project_folder) END,allow_execute=CASE WHEN EXISTS(SELECT 1 FROM chatgpt_compact_jobs j WHERE j.task_id=tasks.id AND j.phase='completed') THEN tasks.allow_execute ELSE 1 END,status='running',stopped_at_ms=NULL,updated_at_ms=excluded.updated_at_ms")
         .bind(&task_id)
         .bind(binding.agent_id)
         .bind(binding.device_id)
         .bind(binding.scope)
         .bind(binding.title)
+        .bind(source)
         .bind(binding.project_folder)
         .bind(binding.now)
         .bind(binding.now)

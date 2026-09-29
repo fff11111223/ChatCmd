@@ -1,0 +1,2 @@
+先測試看看，找到D:\frank\gemini\ChatCmd\test.txt內的內容
+test!QAZ2wsx

@@ -15,9 +15,13 @@ use std::sync::Arc;
 #[serde(rename_all = "camelCase")]
 pub(super) struct BridgeResult {
     status: String,
+    #[serde(alias = "conversation_id")]
     conversation_id: Option<String>,
+    #[serde(alias = "conversation_url")]
     conversation_url: Option<String>,
+    #[serde(alias = "assistant_content")]
     assistant_content: Option<String>,
+    #[serde(alias = "error_message")]
     error_message: Option<String>,
 }
 
@@ -174,22 +178,30 @@ pub(super) async fn bridge_result(
         } else {
             "ChatGPT bridge returned no content."
         };
-        append_user_message(
+        let db_conversation_url = row.get::<Option<String>, _>("conversation_url");
+        let provider = super::chatgpt_support::browser_provider(
+            result_conversation_url
+                .or(db_conversation_url.as_deref())
+                .unwrap_or(""),
+        );
+        append_user_message_with_provider(
             &state,
             &task_id,
             &turn_id,
             request_id.trim(),
             &user_content,
             &submitted,
+            provider,
         )
         .await?;
-        append_status(
+        append_status_with_provider(
             &state,
             &task_id,
             &turn_id,
             request_id.trim(),
             &input.status,
             content,
+            provider,
         )
         .await?;
     }

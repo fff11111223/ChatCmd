@@ -100,7 +100,9 @@ function TaskConversationDetail({ taskId, refreshVersion, realtime, liveEvents, 
 
 function TaskDetailContent({ detail, realtime, onTaskChanged, hasOlder, loadingOlder, onLoadOlder }: { detail: TaskDetail; realtime: string; onTaskChanged: (detail: TaskDetail) => void; hasOlder: boolean; loadingOlder: boolean; onLoadOlder: () => Promise<void> }) {
   const { task, events = [] } = detail;
-  const chatGpt = task.source === 'chatgpt_web';
+  const isBrowserBridge = task.source === 'chatgpt_web' || task.source === 'gemini_web';
+  const chatGpt = isBrowserBridge;
+  const isGemini = task.source === 'gemini_web';
   const turns = useMemo(() => detail.turns?.length ? detail.turns : buildTaskTurns(events, task), [detail.turns, events, task]);
   const startedAt = task.createdAtUtc ?? turns[0]?.startedAtUtc ?? task.updatedAtUtc;
   const chatRef = useRef<HTMLElement>(null);
@@ -127,7 +129,7 @@ function TaskDetailContent({ detail, realtime, onTaskChanged, hasOlder, loadingO
     }));
   };
 
-  return <CompactProvider taskId={task.id} enabled={chatGpt}><div className={`task-detail-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+  return <CompactProvider taskId={task.id} enabled={task.source === 'chatgpt_web'}><div className={`task-detail-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
     <div className="task-detail-body">
       <div className={`task-chat-pane${chatGpt ? ' has-chatgpt-footer' : ''}`}>
       <header className="task-detail-topbar" tabIndex={0} aria-label={subagentLabel('header')}><div><h1>{conversationName(task)}</h1><p>{tr('{count} agent turns · generation {generation} · {realtime} · updated {time}', { count: turns.length, generation: task.generation ?? 1, realtime: realtime === 'online' ? translatedStatus('online') : realtime, time: formatTime(task.updatedAtUtc) })}</p></div><div className="task-detail-topbar-actions"><StatusBadge state={task.status} /><button className="task-detail-sidebar-toggle" type="button" aria-label={tr(sidebarCollapsed ? 'Open task information' : 'Close task information')} title={tr(sidebarCollapsed ? 'Open task information' : 'Close task information')} onClick={toggleSidebar}>{sidebarCollapsed ? <PanelRightOpen /> : <PanelRightClose />}</button></div></header>
@@ -135,7 +137,7 @@ function TaskDetailContent({ detail, realtime, onTaskChanged, hasOlder, loadingO
           <SubagentApprovalQueue approvals={detail.subagentApprovals ?? []} onResolved={(activityId) => onTaskChanged({ ...detail, subagentApprovals: (detail.subagentApprovals ?? []).filter((item) => item.activityId !== activityId) })} />
           {loadingOlder && <div className="task-history-skeleton" role="status" aria-label={tr('Loading older conversation')}><span /><span /><span /></div>}
           <section className="task-bubble-timeline turn-timeline" aria-label={tr('Conversation activity')}>
-            {turns.length ? turns.map((turn) => <TaskTurnBubble turn={turn} taskId={task.id} agentLabel={chatGpt ? 'ChatGPT' : tr('Codex Agent')} subagents={(detail.subagents ?? []).filter((agent) => (agent.rootTurnId ?? agent.parentTurnId) === turn.id)} key={turn.id} />) : <div className="task-awaiting-first-response" role="status" aria-live="polite"><span className="task-awaiting-first-response-icon"><LoaderCircle /></span><span>{tr('The conversation is connected, ChatGPT is thinking about the answer...')}</span></div>}
+            {turns.length ? turns.map((turn) => <TaskTurnBubble turn={turn} taskId={task.id} agentLabel={isGemini ? 'Gemini' : chatGpt ? 'ChatGPT' : tr('Codex Agent')} subagents={(detail.subagents ?? []).filter((agent) => (agent.rootTurnId ?? agent.parentTurnId) === turn.id)} key={turn.id} />) : <div className="task-awaiting-first-response" role="status" aria-live="polite"><span className="task-awaiting-first-response-icon"><LoaderCircle /></span><span>{isGemini ? tr('The conversation is connected, Gemini is thinking about the answer...') : tr('The conversation is connected, ChatGPT is thinking about the answer...')}</span></div>}
           </section>
         </main>
         {chatGpt && <footer className="task-chat-footer"><ChatGptTaskComposer taskId={task.id} /></footer>}
@@ -147,7 +149,7 @@ function TaskDetailContent({ detail, realtime, onTaskChanged, hasOlder, loadingO
         <TaskTerminalSection taskId={task.id} turnId={lastTurn?.id} />
         {(chatGpt || task.isSubagent) && <ChatGptTaskCard taskId={task.id} />}
         <TaskAccessCard taskId={detail.executionModeSourceTaskId ?? task.id} grantTaskId={task.id} defaultMode={detail.executionMode ?? 'allowAll'} grants={detail.approvalGrants} />
-        {chatGpt && <CompactHistoryCard />}
+        {chatGpt && task.source === 'chatgpt_web' && <CompactHistoryCard />}
         {!chatGpt && <TaskConversationStopCard taskId={task.id} taskStatus={task.status} onStopped={onTaskChanged} />}
       </aside>}
     </div>
