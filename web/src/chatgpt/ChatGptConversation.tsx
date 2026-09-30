@@ -126,7 +126,7 @@ export function NewChatGptConversation() {
       const status = await chatGptExtensionStatus(undefined, provider);
       setExtensionReady(status.ready); setChatGptTabOpen(status.chatGptTabOpen);
       if (!status.ready) throw new Error(tr('ChatCMD ChatGPT Bridge extension is not ready. Enable or reload it, then try again.'));
-      const effectiveAgentId = provider === 'gemini' ? (agentId || 'gemini-web-agent') : agentId;
+      const effectiveAgentId = provider === 'gemini' ? 'gemini-web-agent' : agentId;
       const request = await api.createChatGptRequest({ agentId: effectiveAgentId, provider, model: DEFAULT_MODEL, projectFolder: projectFolder.trim(), content: effectiveContent });
       if (provider !== 'gemini' && agentId) rememberAgentUse(agentId);
       await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model, provider, newConversationUrl, attachments: fileAttachmentPayloads(textAttachments) });

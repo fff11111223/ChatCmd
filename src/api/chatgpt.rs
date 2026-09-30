@@ -226,9 +226,10 @@ pub(super) async fn bridge_started(
     let project_folder = row.get::<Option<String>, _>("project_folder");
     let existing_task = row.get::<Option<String>, _>("task_id");
     let scope = openai_scope(&input.conversation_id);
+    let source = browser_provider(&input.conversation_url);
     let candidate_task_id = if let Some(id) = existing_task {
         id
-    } else if let Some(id) = task_for_scope(&state, &agent_id, &scope).await? {
+    } else if let Some(id) = task_for_scope(&state, &agent_id, &scope, source).await? {
         id
     } else {
         bridge_task_id(&agent_id, &scope, &submitted)

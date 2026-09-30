@@ -56,7 +56,8 @@ impl RuntimeHost {
             } else {
                 None
             };
-        let pending_chatgpt_bridge_task = if explicit_task.is_none()
+        let pending_chatgpt_bridge_task = if context.agent_id != "gemini-web-agent"
+            && explicit_task.is_none()
             && bound_task.is_none()
             && delegated_task.is_none()
             && chatgpt_bridge_task.is_none()

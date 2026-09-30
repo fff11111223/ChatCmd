@@ -79,6 +79,7 @@
       ],
       "js": [
         "content-runtime.js",
+        "content-chatgpt-tool-bridge.js",
         "content-gemini.js"
       ],
       "run_at": "document_idle"

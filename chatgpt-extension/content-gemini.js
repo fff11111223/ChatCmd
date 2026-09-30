@@ -154,6 +154,28 @@
     throw new Error(`Timed out waiting for Gemini response (${requestId}).`);
   }
 
+  async function executeToolLoop(requestId, initialResult) {
+    let currentResult = initialResult;
+    while (globalThis.ChatCmdToolBridge?.hasPendingToolCalls(currentResult)) {
+      const assistantCount = assistantElements().length;
+      const submitToolResult = async (replyText) => {
+        const composer = findComposer();
+        if (!composer) throw new Error('Gemini composer was not found while submitting a tool result.');
+        await setComposerText(composer, replyText);
+        await submitPrompt(composer);
+      };
+      const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(
+        requestId,
+        currentResult,
+        submitToolResult,
+      );
+      if (!dispatched) break;
+      currentResult = await waitForAssistant(assistantCount, requestId);
+    }
+    globalThis.ChatCmdToolBridge?.reset?.();
+    return currentResult;
+  }
+
   let activeRequest = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -197,7 +219,8 @@
         await sleep(200);
         await submitPrompt(composer);
 
-        const assistantContent = await waitForAssistant(beforeCount, message.requestId);
+        const initialAssistantContent = await waitForAssistant(beforeCount, message.requestId);
+        const assistantContent = await executeToolLoop(message.requestId, initialAssistantContent);
 
         await chrome.runtime.sendMessage({
           type: RESULT_TYPE,

@@ -140,10 +140,12 @@ pub(super) async fn task_for_scope(
     state: &Arc<AppState>,
     agent_id: &str,
     scope: &str,
+    source: &str,
 ) -> Result<Option<String>, Problem> {
-    sqlx::query_scalar("SELECT id FROM tasks WHERE agent_id=? AND conversation_scope_hash=? ORDER BY created_at_ms,id LIMIT 1")
+    sqlx::query_scalar("SELECT id FROM tasks WHERE agent_id=? AND conversation_scope_hash=? AND source=? ORDER BY created_at_ms,id LIMIT 1")
         .bind(agent_id)
         .bind(scope)
+        .bind(source)
         .fetch_optional(state.repository.pool())
         .await
         .map_err(db_problem)
