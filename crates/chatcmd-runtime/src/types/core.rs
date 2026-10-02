@@ -196,6 +196,7 @@ pub struct RuntimeConfig {
     pub default_shell: Option<PathBuf>,
     pub user_home: Option<PathBuf>,
     pub repository_root: Option<PathBuf>,
+    pub global_skills_dir: Option<PathBuf>,
 }
 
 impl Default for RuntimeConfig {
@@ -214,6 +215,7 @@ impl Default for RuntimeConfig {
             default_shell: None,
             user_home: None,
             repository_root: None,
+            global_skills_dir: None,
         }
     }
 }

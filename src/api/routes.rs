@@ -166,6 +166,15 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/skills", get(skills))
         .route("/skills/preview", post(preview_skills))
         .route("/skills/install", post(install_skill))
+        .route("/skills/sources", get(list_local_sources).post(add_local_source))
+        .route(
+            "/skills/sources/{source_id}",
+            axum::routing::delete(remove_local_source),
+        )
+        .route("/skills/sources/{source_id}/reload", post(reload_local_source))
+        .route("/skills/sources/{source_id}/lint", get(lint_local_source))
+        .route("/skills/resident-usage", get(resident_usage))
+        .route("/skills/resident-preview", get(resident_preview))
         .route("/skills/{id}", get(skill).delete(delete_skill))
         .route("/skills/{id}/enabled", patch(set_skill_enabled))
         .route("/skills/{id}/options", patch(set_skill_options))

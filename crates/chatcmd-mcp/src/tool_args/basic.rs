@@ -38,7 +38,11 @@ tool_args!(CwdArgs {
 });
 tool_args!(SkillArgs {
     #[serde(alias = "id")]
-    skill_id: String
+    skill_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool: Option<String>
 });
 tool_args!(ProcessArgs { process_id: u32 });
 tool_args!(ArtifactArgs {

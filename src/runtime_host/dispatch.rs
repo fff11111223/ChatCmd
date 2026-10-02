@@ -435,14 +435,20 @@ impl RuntimeHost {
             }
             "skills_list" => value(
                 self.skills
-                    .list_for_workspace(project_folder.as_deref())
+                    .list_for_task(context.task_id.as_deref(), project_folder.as_deref())
                     .await?,
             ),
             "skill_read" => {
                 let input: SkillInput = parse(arguments)?;
                 value(
                     self.skills
-                        .read_for_workspace(&input.skill_id, project_folder.as_deref())
+                        .read_for_task(
+                            context.task_id.as_deref(),
+                            &input.skill_id,
+                            input.tier.as_deref(),
+                            input.tool.as_deref(),
+                            project_folder.as_deref(),
+                        )
                         .await?,
                 )
             }

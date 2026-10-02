@@ -11,6 +11,12 @@ use tokio::process::Command;
 mod support;
 use support::*;
 
+mod tier;
+pub use tier::*;
+
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 const MAX_SKILL_BYTES: u64 = 2_000_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +50,31 @@ pub struct ManagedSkill {
     pub enabled: bool,
     pub can_delete: bool,
     pub options: Vec<SkillOption>,
+    // Extended fields (Task 2) — have defaults so old front-end calls are unaffected.
+    /// Human-readable source category: "global", "project", "local", "workspace", "user_home".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    /// Whether a resident.md that is actively used exists for this skill.
+    #[serde(default)]
+    pub has_resident: bool,
+    /// Character count of the resident.md content, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_chars: Option<usize>,
+    /// Whether core.md (or legacy SKILL.md) exists.
+    #[serde(default)]
+    pub has_core: bool,
+    /// List of tool example keys (files in examples/ without .md extension).
+    #[serde(default)]
+    pub examples: Vec<String>,
+    /// The global skill name that this project skill overrides, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<String>,
+    /// Non-fatal warnings from lint or loading.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// Errors from lint or loading.
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -64,10 +95,54 @@ pub struct SkillInstallPreview {
     pub skipped_invalid: usize,
 }
 
+/// A locally registered skill folder source (persisted in skills.json).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSkillSource {
+    /// Unique identifier for this source (assigned at registration time).
+    pub id: String,
+    /// Absolute path to the folder containing skill subdirectories.
+    pub path: String,
+    /// Scope: "global" or a project name.
+    pub scope: String,
+}
+
+/// Lint diagnostics for a single skill directory inside a local source.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSourceLintResult {
+    pub skill_name: String,
+    pub path: String,
+    pub diagnostics: Vec<SkillLintDiagnostic>,
+}
+
+/// Character usage of resident instructions.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidentUsage {
+    pub used_chars: usize,
+    pub limit_chars: usize,
+    pub warnings: Vec<String>,
+}
+
+/// Preview of the resident instructions the model would receive.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidentPreview {
+    pub resident_instructions: String,
+    pub skill_names: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SkillSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    global_skills_dir: Option<String>,
     #[serde(default)]
     skills: HashMap<String, SkillSetting>,
+    /// Locally registered folder sources added via the management API.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    local_sources: Vec<LocalSkillSource>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct SkillSetting {
@@ -84,29 +159,92 @@ impl Default for SkillSetting {
         }
     }
 }
+
+pub fn resolve_default_global_skills_dir(repository_root: Option<&Path>) -> PathBuf {
+    if let Some(env_dir) = std::env::var_os("CHATCMD_GLOBAL_SKILLS_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(env_dir);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        let is_cargo_target = exe.components().any(|c| c.as_os_str() == "target");
+        if is_cargo_target {
+            if let Some(repo) = repository_root {
+                return repo.join("skills").join("global");
+            }
+            let mut current = exe.as_path();
+            while let Some(parent) = current.parent() {
+                if parent.file_name().is_some_and(|n| n == "target") {
+                    if let Some(project_root) = parent.parent() {
+                        return project_root.join("skills").join("global");
+                    }
+                }
+                current = parent;
+            }
+        } else {
+            #[cfg(target_os = "macos")]
+            if let Some(app_bundle) = exe.ancestors().find(|p| {
+                p.extension()
+                    .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("app"))
+            }) {
+                if let Some(parent) = app_bundle.parent() {
+                    return parent.join("skills").join("global");
+                }
+            }
+
+            if let Some(parent) = exe.parent() {
+                return parent.join("skills").join("global");
+            }
+        }
+    }
+
+    if let Some(repo) = repository_root {
+        repo.join("skills").join("global")
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("skills")
+            .join("global")
+    }
+}
+
+#[derive(Clone)]
+pub struct TaskSkillSnapshot {
+    pub task_id: Option<String>,
+    pub project_folder: Option<PathBuf>,
+    pub skills: Vec<DiscoveredSkill>,
+    pub summaries: Vec<SkillSummary>,
+    pub resident_instructions: String,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct SkillService {
     roots: Vec<(String, PathBuf)>,
     global_roots: Vec<PathBuf>,
+    global_skills_dir: PathBuf,
+    user_home: Option<PathBuf>,
+    project_skills_root: Option<PathBuf>,
     install_root: Option<PathBuf>,
     settings_path: Option<PathBuf>,
     max_characters: usize,
+    task_snapshots: Arc<RwLock<HashMap<String, Arc<TaskSkillSnapshot>>>>,
 }
 
 #[derive(Clone)]
-struct DiscoveredSkill {
-    id: String,
-    name: String,
-    title: String,
-    description: String,
-    directory: PathBuf,
-    source: String,
-    source_url: Option<String>,
-    enabled: bool,
-    can_delete: bool,
-    icon_path: Option<String>,
-    options: Vec<SkillOption>,
-    precedence: usize,
+pub struct DiscoveredSkill {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub directory: PathBuf,
+    pub source: String,
+    pub source_url: Option<String>,
+    pub enabled: bool,
+    pub can_delete: bool,
+    pub icon_path: Option<String>,
+    pub options: Vec<SkillOption>,
+    pub precedence: usize,
+    pub tier_info: SkillTierInfo,
 }
 
 struct InstallCandidateSource {
@@ -124,29 +262,128 @@ impl SkillService {
     pub fn new(
         user_home: Option<&Path>,
         repository_root: Option<&Path>,
+        global_skills_dir: Option<&Path>,
         max_characters: usize,
     ) -> Self {
+        let settings_path = user_home.map(|home| home.join(".chatcmd/skills.json"));
+        let effective_global = global_skills_dir
+            .map(PathBuf::from)
+            .or_else(|| {
+                settings_path.as_ref().and_then(|p| {
+                    if let Ok(content) = fs::read_to_string(p) {
+                        let s: SkillSettings = serde_json::from_str(&content).unwrap_or_default();
+                        s.global_skills_dir.map(PathBuf::from)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_else(|| resolve_default_global_skills_dir(repository_root));
+
         let mut roots = Vec::new();
+        let project_skills_root = repository_root
+            .map(|repo| repo.join("skills").join("projects"))
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|d| d.join("skills").join("projects"))
+            });
+
         if let Some(repository) = repository_root {
             roots.push(("workspace".into(), repository.join(".agents/skills")));
             roots.push(("workspace".into(), repository.join(".codex/skills")));
         }
-        let mut global_roots = Vec::new();
+
+        let global_roots = vec![effective_global.clone()];
+        roots.push(("global".into(), effective_global.clone()));
+
         if let Some(home) = user_home {
-            global_roots.push(home.join(".agents/skills"));
-            global_roots.push(home.join(".codex/skills"));
-            roots.push(("global".into(), home.join(".agents/skills")));
-            roots.push(("global".into(), home.join(".codex/skills")));
+            roots.push(("user_home".into(), home.join(".agents/skills")));
+            roots.push(("user_home".into(), home.join(".codex/skills")));
         }
-        let install_root = global_roots.first().cloned();
-        let settings_path = user_home.map(|home| home.join(".chatcmd/skills.json"));
+
+        let install_root = Some(effective_global.clone());
         Self {
             roots,
             global_roots,
+            global_skills_dir: effective_global,
+            user_home: user_home.map(Path::to_path_buf),
+            project_skills_root,
             install_root,
             settings_path,
             max_characters: max_characters.clamp(1, 1_000_000),
+            task_snapshots: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub async fn snapshot_for_task(
+        &self,
+        task_id: Option<&str>,
+        project_folder: Option<&Path>,
+    ) -> RuntimeResult<Arc<TaskSkillSnapshot>> {
+        if let Some(id) = task_id.filter(|s| !s.trim().is_empty()) {
+            let snapshots = self.task_snapshots.read().await;
+            if let Some(snapshot) = snapshots.get(id) {
+                return Ok(snapshot.clone());
+            }
+        }
+
+        let roots = self.roots_for_workspace(project_folder);
+        let (skills, mut warnings) = self.resolve_skills_for_workspace(&roots)?;
+
+        for skill in &skills {
+            if (skill.source == "user_home" || skill.source == "workspace") && skill.tier_info.has_resident {
+                warnings.push(format!(
+                    "Skill '{}' from legacy source '{}' contains resident.md which is ignored.",
+                    skill.name, skill.source
+                ));
+            }
+        }
+
+        let mut active_residents = Vec::new();
+        for skill in &skills {
+            if skill.enabled {
+                if let Some(resident) = &skill.tier_info.resident_content {
+                    active_residents.push((skill.name.as_str(), resident.as_str()));
+                }
+            }
+        }
+
+        let (resident_instructions, resident_warnings) =
+            merge_resident_instructions(&active_residents);
+        warnings.extend(resident_warnings);
+
+        let mut seen = HashSet::new();
+        let summaries: Vec<SkillSummary> = skills
+            .iter()
+            .filter(|skill| skill.enabled && seen.insert(skill.name.to_lowercase()))
+            .map(|skill| SkillSummary {
+                id: skill.name.clone(),
+                name: skill.name.clone(),
+                title: skill.title.clone(),
+                description: skill.description.clone(),
+                source: skill.directory.to_string_lossy().into_owned(),
+                has_resident: skill.tier_info.has_resident && skill.tier_info.resident_content.is_some(),
+                has_core: skill.tier_info.has_core,
+                examples: skill.tier_info.examples.clone(),
+            })
+            .collect();
+
+        let snapshot = Arc::new(TaskSkillSnapshot {
+            task_id: task_id.map(str::to_owned),
+            project_folder: project_folder.map(Path::to_path_buf),
+            skills,
+            summaries,
+            resident_instructions,
+            warnings,
+        });
+
+        if let Some(id) = task_id.filter(|s| !s.trim().is_empty()) {
+            let mut snapshots = self.task_snapshots.write().await;
+            snapshots.insert(id.to_owned(), snapshot.clone());
+        }
+
+        Ok(snapshot)
     }
 
     pub async fn list(&self) -> RuntimeResult<Vec<SkillSummary>> {
@@ -157,20 +394,20 @@ impl SkillService {
         &self,
         repository_root: Option<&Path>,
     ) -> RuntimeResult<Vec<SkillSummary>> {
-        let roots = self.roots_for_workspace(repository_root);
-        self.list_from_roots(&roots)
+        self.list_for_task(None, repository_root).await
+    }
+
+    pub async fn list_for_task(
+        &self,
+        task_id: Option<&str>,
+        project_folder: Option<&Path>,
+    ) -> RuntimeResult<Vec<SkillSummary>> {
+        let snapshot = self.snapshot_for_task(task_id, project_folder).await?;
+        Ok(snapshot.summaries.clone())
     }
 
     pub async fn read(&self, skill_id: &str) -> RuntimeResult<SkillReadResult> {
-        let selected = self
-            .list()
-            .await?
-            .into_iter()
-            .find(|skill| skill.id == skill_id)
-            .ok_or_else(|| {
-                RuntimeError::new("skill_not_found", "skill is unavailable or shadowed")
-            })?;
-        self.read_selected(selected).await
+        self.read_for_task(None, skill_id, None, None, None).await
     }
 
     pub async fn read_for_workspace(
@@ -178,36 +415,209 @@ impl SkillService {
         skill_id: &str,
         repository_root: Option<&Path>,
     ) -> RuntimeResult<SkillReadResult> {
-        let selected = self
-            .list_for_workspace(repository_root)
-            .await?
-            .into_iter()
-            .find(|skill| skill.id == skill_id)
+        self.read_for_task(None, skill_id, None, None, repository_root)
+            .await
+    }
+
+    pub async fn read_for_task(
+        &self,
+        task_id: Option<&str>,
+        skill_id: &str,
+        tier: Option<&str>,
+        tool: Option<&str>,
+        project_folder: Option<&Path>,
+    ) -> RuntimeResult<SkillReadResult> {
+        let trimmed_skill_id = skill_id.trim();
+        if trimmed_skill_id.is_empty() {
+            return Err(RuntimeError::new(
+                "invalid_skill_id",
+                "skillId cannot be empty",
+            ));
+        }
+        if trimmed_skill_id.contains("..")
+            || trimmed_skill_id.contains('/')
+            || trimmed_skill_id.contains('\\')
+            || trimmed_skill_id.contains(':')
+        {
+            return Err(RuntimeError::new(
+                "invalid_skill_id",
+                "skillId cannot contain '..', slashes, or colons",
+            ));
+        }
+
+        let tier_normalized = tier.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("core");
+        if tier_normalized != "core" && tier_normalized != "examples" {
+            return Err(RuntimeError::new(
+                "invalid_tier",
+                format!("Invalid skill tier '{tier_normalized}'. Only 'core' and 'examples' are allowed."),
+            ));
+        }
+
+        if let Some(tool_raw) = tool {
+            let tool_name = tool_raw.trim();
+            if tool_name.is_empty() {
+                return Err(RuntimeError::new(
+                    "invalid_tool_name",
+                    "tool name cannot be empty string",
+                ));
+            }
+            if tool_name.contains("..")
+                || tool_name.contains('/')
+                || tool_name.contains('\\')
+                || tool_name.contains(':')
+            {
+                return Err(RuntimeError::new(
+                    "invalid_tool_name",
+                    "tool name cannot contain '..', slashes, or colons",
+                ));
+            }
+            if !tool_name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                return Err(RuntimeError::new(
+                    "invalid_tool_name",
+                    "tool name only allows lowercase letters, numbers, and underscores",
+                ));
+            }
+        }
+
+        let snapshot = self.snapshot_for_task(task_id, project_folder).await?;
+        let selected = snapshot
+            .skills
+            .iter()
+            .find(|skill| skill.id == trimmed_skill_id || skill.name.eq_ignore_ascii_case(trimmed_skill_id))
             .ok_or_else(|| {
                 RuntimeError::new("skill_not_found", "skill is unavailable or shadowed")
             })?;
-        self.read_selected(selected).await
+
+        match tier_normalized {
+            "core" => {
+                let file = selected
+                    .tier_info
+                    .core_path
+                    .clone()
+                    .unwrap_or_else(|| selected.directory.join("SKILL.md"));
+                let content = tokio::fs::read_to_string(&file).await.map_err(io_error)?;
+                let truncated = content.chars().count() > self.max_characters;
+                Ok(SkillReadResult {
+                    id: selected.id.clone(),
+                    name: selected.name.clone(),
+                    source: selected.directory.to_string_lossy().into_owned(),
+                    instructions: content.chars().take(self.max_characters).collect(),
+                    truncated,
+                    examples: None,
+                })
+            }
+            "examples" => {
+                if let Some(tool_raw) = tool {
+                    let tool_name = tool_raw.trim();
+                    let examples_dir = selected.directory.join("examples");
+                    if !examples_dir.is_dir() {
+                        return Err(RuntimeError::new(
+                            "example_not_found",
+                            format!(
+                                "Example for tool '{tool_name}' not found in skill '{trimmed_skill_id}'"
+                            ),
+                        ));
+                    }
+                    let canonical_examples_dir = examples_dir.canonicalize().map_err(io_error)?;
+
+                    let example_file = examples_dir.join(format!("{tool_name}.md"));
+                    let fallback_file = examples_dir.join(tool_name);
+                    let target_file = if example_file.is_file() {
+                        example_file
+                    } else if fallback_file.is_file() {
+                        fallback_file
+                    } else {
+                        return Err(RuntimeError::new(
+                            "example_not_found",
+                            format!(
+                                "Example for tool '{tool_name}' not found in skill '{trimmed_skill_id}'"
+                            ),
+                        ));
+                    };
+
+                    let canonical_target = target_file.canonicalize().map_err(io_error)?;
+                    if !canonical_target.starts_with(&canonical_examples_dir) {
+                        return Err(RuntimeError::new(
+                            "path_traversal_denied",
+                            "Resolved example path escapes the skill's examples directory",
+                        ));
+                    }
+
+                    let content = tokio::fs::read_to_string(&canonical_target)
+                        .await
+                        .map_err(io_error)?;
+                    let truncated = content.chars().count() > self.max_characters;
+                    Ok(SkillReadResult {
+                        id: selected.id.clone(),
+                        name: selected.name.clone(),
+                        source: selected.directory.to_string_lossy().into_owned(),
+                        instructions: content.chars().take(self.max_characters).collect(),
+                        truncated,
+                        examples: None,
+                    })
+                } else {
+                    let mut instructions = String::new();
+                    if selected.tier_info.examples.is_empty() {
+                        instructions =
+                            format!("No tool examples available for skill '{trimmed_skill_id}'.");
+                    } else {
+                        instructions.push_str(&format!(
+                            "Available tool examples for skill '{trimmed_skill_id}':\n"
+                        ));
+                        for ex in &selected.tier_info.examples {
+                            instructions.push_str(&format!("- {ex}\n"));
+                        }
+                        instructions.push_str(
+                            "\nCall skill_read with tier: \"examples\" and tool: \"<tool_name>\" to read an example.",
+                        );
+                    }
+                    Ok(SkillReadResult {
+                        id: selected.id.clone(),
+                        name: selected.name.clone(),
+                        source: selected.directory.to_string_lossy().into_owned(),
+                        instructions,
+                        truncated: false,
+                        examples: Some(selected.tier_info.examples.clone()),
+                    })
+                }
+            }
+            _ => unreachable!(),
+        }
     }
 
-    async fn read_selected(&self, selected: SkillSummary) -> RuntimeResult<SkillReadResult> {
-        let content = tokio::fs::read_to_string(PathBuf::from(&selected.source).join("SKILL.md"))
-            .await
-            .map_err(io_error)?;
-        let truncated = content.chars().count() > self.max_characters;
-        Ok(SkillReadResult {
-            id: selected.id,
-            name: selected.name,
-            source: selected.source,
-            instructions: content.chars().take(self.max_characters).collect(),
-            truncated,
-        })
+    pub async fn active_resident_instructions_for_task(
+        &self,
+        task_id: Option<&str>,
+        project_folder: Option<&Path>,
+    ) -> RuntimeResult<(String, Vec<String>)> {
+        let snapshot = self.snapshot_for_task(task_id, project_folder).await?;
+        Ok((
+            snapshot.resident_instructions.clone(),
+            snapshot.warnings.clone(),
+        ))
+    }
+
+    pub fn lint_skill(
+        &self,
+        directory: &Path,
+        source_type: SkillSourceType,
+    ) -> Vec<SkillLintDiagnostic> {
+        let (_info, diagnostics) = inspect_skill_tier(directory, source_type);
+        diagnostics
+    }
+
+    pub fn global_skills_dir(&self) -> &Path {
+        &self.global_skills_dir
     }
 
     pub async fn list_global(&self) -> RuntimeResult<Vec<ManagedSkill>> {
         let mut values: Vec<_> = self
             .discover_all()?
             .into_iter()
-            .filter(|skill| skill.source == "global")
+            .filter(|skill| skill.source == "global" || skill.source == "user_home")
             .collect();
         values.sort_by_key(|skill| (skill.precedence, skill.name.to_lowercase()));
         let mut seen = HashSet::new();
@@ -480,18 +890,36 @@ impl SkillService {
         Ok(self
             .discover_all()?
             .into_iter()
-            .find(|skill| skill.source == "global" && skill.id == id))
+            .find(|skill| (skill.source == "global" || skill.source == "user_home") && skill.id == id))
     }
     fn global_by_name(&self, name: &str) -> RuntimeResult<Option<DiscoveredSkill>> {
         Ok(self
             .discover_all()?
             .into_iter()
-            .find(|skill| skill.source == "global" && skill.name.eq_ignore_ascii_case(name)))
+            .find(|skill| (skill.source == "global" || skill.source == "user_home") && skill.name.eq_ignore_ascii_case(name)))
     }
 
     fn roots_for_workspace(&self, repository_root: Option<&Path>) -> Vec<(String, PathBuf)> {
         let mut roots = Vec::new();
         if let Some(repository) = repository_root {
+            let project_name = repository
+                .file_name()
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !project_name.is_empty() {
+                if let Some(project_root) = &self.project_skills_root {
+                    let dir = project_root.join(&project_name);
+                    if dir.is_dir() {
+                        roots.push(("project".into(), dir));
+                    }
+                }
+                if let Some(home_parent) = &self.settings_path.as_ref().and_then(|p| p.parent()) {
+                    let dir = home_parent.join("skills").join("projects").join(&project_name);
+                    if dir.is_dir() && !roots.iter().any(|(_, p)| p == &dir) {
+                        roots.push(("project".into(), dir));
+                    }
+                }
+            }
             roots.push(("workspace".into(), repository.join(".agents/skills")));
             roots.push(("workspace".into(), repository.join(".codex/skills")));
         }
@@ -501,11 +929,74 @@ impl SkillService {
                 .cloned()
                 .map(|root| ("global".into(), root)),
         );
+        if let Some(home) = &self.user_home {
+            roots.push(("user_home".into(), home.join(".agents/skills")));
+            roots.push(("user_home".into(), home.join(".codex/skills")));
+        }
         roots
     }
 
-    fn list_from_roots(&self, roots: &[(String, PathBuf)]) -> RuntimeResult<Vec<SkillSummary>> {
+    fn resolve_skills_for_workspace(
+        &self,
+        roots: &[(String, PathBuf)],
+    ) -> RuntimeResult<(Vec<DiscoveredSkill>, Vec<String>)> {
         let all = self.discover_from_roots(roots)?;
+        let mut warnings = Vec::new();
+
+        let mut project_skills = HashMap::new();
+        let mut other_skills = Vec::new();
+
+        for skill in all {
+            if skill.source == "project" {
+                project_skills.insert(skill.name.to_lowercase(), skill);
+            } else {
+                other_skills.push(skill);
+            }
+        }
+
+        other_skills.sort_by_key(|skill| (skill.precedence, skill.name.to_lowercase()));
+
+        let mut final_skills = Vec::new();
+        let mut seen = HashSet::new();
+
+        for global_skill in other_skills {
+            let key = global_skill.name.to_lowercase();
+            if let Some(proj_skill) = project_skills.remove(&key) {
+                let target_match = proj_skill
+                    .tier_info
+                    .overrides
+                    .as_deref()
+                    .is_some_and(|target| target.eq_ignore_ascii_case(&global_skill.name));
+
+                if target_match {
+                    if seen.insert(key) {
+                        final_skills.push(proj_skill);
+                    }
+                } else {
+                    warnings.push(format!(
+                        "Project skill '{}' does not override global skill because frontmatter lacks 'overrides: {}'.",
+                        proj_skill.name, global_skill.name
+                    ));
+                    if seen.insert(key) {
+                        final_skills.push(global_skill);
+                    }
+                }
+            } else if seen.insert(key) {
+                final_skills.push(global_skill);
+            }
+        }
+
+        for (key, proj_skill) in project_skills {
+            if seen.insert(key) {
+                final_skills.push(proj_skill);
+            }
+        }
+
+        Ok((final_skills, warnings))
+    }
+
+    fn list_from_roots(&self, roots: &[(String, PathBuf)]) -> RuntimeResult<Vec<SkillSummary>> {
+        let (all, _warnings) = self.resolve_skills_for_workspace(roots)?;
         let mut seen = HashSet::new();
         Ok(all
             .into_iter()
@@ -516,6 +1007,9 @@ impl SkillService {
                 title: skill.title,
                 description: skill.description,
                 source: skill.directory.to_string_lossy().into_owned(),
+                has_resident: skill.tier_info.has_resident && skill.tier_info.resident_content.is_some(),
+                has_core: skill.tier_info.has_core,
+                examples: skill.tier_info.examples,
             })
             .collect())
     }
@@ -551,7 +1045,7 @@ impl SkillService {
                 {
                     continue;
                 }
-                if !directory.join("SKILL.md").is_file() {
+                if !directory.join("SKILL.md").is_file() && !directory.join("core.md").is_file() {
                     continue;
                 }
                 if let Ok(skill) = self.parse_skill(directory, source, index, &settings) {
@@ -569,11 +1063,24 @@ impl SkillService {
         precedence: usize,
         settings: &SkillSettings,
     ) -> RuntimeResult<DiscoveredSkill> {
-        let file = directory.join("SKILL.md");
+        let source_type = if source == "project" {
+            SkillSourceType::Project
+        } else if source == "global" {
+            SkillSourceType::Global
+        } else {
+            SkillSourceType::LegacyAgentOrCodex
+        };
+
+        let (tier_info, _diagnostics) = inspect_skill_tier(&directory, source_type);
+        let file = tier_info
+            .core_path
+            .clone()
+            .unwrap_or_else(|| directory.join("SKILL.md"));
+
         if fs::metadata(&file).map_err(io_error)?.len() > MAX_SKILL_BYTES {
             return Err(RuntimeError::new(
                 "skill_too_large",
-                "SKILL.md exceeds 2 MB.",
+                "Skill instruction file exceeds 2 MB.",
             ));
         }
         let metadata = parse_frontmatter(&fs::read_to_string(&file).map_err(io_error)?);
@@ -612,6 +1119,7 @@ impl SkillService {
             icon_path,
             options: create_options(&name, stored.map(|v| &v.options)),
             precedence,
+            tier_info,
         })
     }
 
@@ -638,6 +1146,208 @@ impl SkillService {
                 .map_err(|error| RuntimeError::new("skill_settings_invalid", error.to_string()))?,
         )
         .map_err(io_error)
+    }
+
+    // ── Local source management ──────────────────────────────────────────────
+
+    /// List all locally-registered folder sources.
+    pub fn list_local_sources(&self) -> RuntimeResult<Vec<LocalSkillSource>> {
+        Ok(self.load_settings()?.local_sources)
+    }
+
+    /// Register a new local folder source.
+    ///
+    /// Validation:
+    /// - The folder must exist and be readable.
+    /// - It must contain at least one valid skill (directory with SKILL.md or core.md).
+    /// - The path is stored exactly as supplied (normalised to absolute); no files are copied.
+    ///
+    /// Returns the newly created `LocalSkillSource` on success.
+    pub fn add_local_source(
+        &self,
+        raw_path: &str,
+        scope: &str,
+    ) -> RuntimeResult<LocalSkillSource> {
+        // Reject obviously dangerous path fragments.
+        if raw_path.contains("..") {
+            return Err(RuntimeError::new(
+                "invalid_local_source",
+                "Path must not contain '..'",
+            ));
+        }
+        let path = PathBuf::from(raw_path);
+        if !path.is_absolute() {
+            return Err(RuntimeError::new(
+                "invalid_local_source",
+                "Path must be absolute",
+            ));
+        }
+        // Must be an existing directory.
+        if !path.is_dir() {
+            return Err(RuntimeError::new(
+                "invalid_local_source",
+                "Path does not exist or is not a directory",
+            ));
+        }
+        // Must contain at least one valid skill subdirectory.
+        let has_any_skill = fs::read_dir(&path)
+            .map_err(io_error)?
+            .filter_map(Result::ok)
+            .any(|entry| {
+                let dir = entry.path();
+                dir.is_dir()
+                    && (dir.join("SKILL.md").is_file() || dir.join("core.md").is_file())
+            });
+        if !has_any_skill {
+            return Err(RuntimeError::new(
+                "invalid_local_source",
+                "Directory contains no valid skill subdirectories (each must have SKILL.md or core.md)",
+            ));
+        }
+
+        let mut settings = self.load_settings()?;
+        // Reject duplicates.
+        let canonical = path.canonicalize().map_err(io_error)?;
+        for existing in &settings.local_sources {
+            if let Ok(existing_canonical) = PathBuf::from(&existing.path).canonicalize() {
+                if existing_canonical == canonical {
+                    return Err(RuntimeError::new(
+                        "local_source_conflict",
+                        "This path is already registered as a local source",
+                    ));
+                }
+            }
+        }
+
+        let id = format!(
+            "local-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis())
+        );
+        let source = LocalSkillSource {
+            id: id.clone(),
+            path: canonical.to_string_lossy().into_owned(),
+            scope: scope.to_owned(),
+        };
+        settings.local_sources.push(source.clone());
+        self.save_settings(&settings)?;
+        Ok(source)
+    }
+
+    /// Remove a locally-registered source by its ID.
+    /// Only deregisters; never deletes files on disk.
+    pub fn remove_local_source(&self, source_id: &str) -> RuntimeResult<bool> {
+        let mut settings = self.load_settings()?;
+        let before = settings.local_sources.len();
+        settings
+            .local_sources
+            .retain(|s| s.id != source_id);
+        if settings.local_sources.len() == before {
+            return Ok(false);
+        }
+        self.save_settings(&settings)?;
+        Ok(true)
+    }
+
+    /// Reload a local source — invalidates task snapshots that include the source.
+    ///
+    /// At the moment, invalidating all snapshots is the conservative approach.
+    /// A future version could only evict snapshots whose roots overlap the source.
+    pub async fn reload_local_source(&self, source_id: &str) -> RuntimeResult<bool> {
+        let settings = self.load_settings()?;
+        let exists = settings.local_sources.iter().any(|s| s.id == source_id);
+        if !exists {
+            return Ok(false);
+        }
+        // Evict all cached task snapshots so they are rebuilt on next access.
+        self.task_snapshots.write().await.clear();
+        Ok(true)
+    }
+
+    /// Run lint on every skill directory inside a registered local source.
+    /// Returns diagnostics grouped by skill name.
+    pub fn lint_local_source(
+        &self,
+        source_id: &str,
+    ) -> RuntimeResult<Vec<SkillSourceLintResult>> {
+        let settings = self.load_settings()?;
+        let Some(source) = settings.local_sources.iter().find(|s| s.id == source_id) else {
+            return Err(RuntimeError::new(
+                "local_source_not_found",
+                "No local source with that id",
+            ));
+        };
+        let root = PathBuf::from(&source.path);
+        let source_type = SkillSourceType::Global; // local sources behave like global
+
+        let entries = match fs::read_dir(&root) {
+            Ok(e) => e,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let mut results = Vec::new();
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            if dir
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            {
+                continue;
+            }
+            if !dir.join("SKILL.md").is_file() && !dir.join("core.md").is_file() {
+                continue;
+            }
+            let diagnostics = self.lint_skill(&dir, source_type);
+            let skill_name = dir
+                .file_name()
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            results.push(SkillSourceLintResult {
+                skill_name,
+                path: dir.to_string_lossy().into_owned(),
+                diagnostics,
+            });
+        }
+        results.sort_by(|a, b| a.skill_name.cmp(&b.skill_name));
+        Ok(results)
+    }
+
+    /// Return the current resident-instruction character usage and limit.
+    pub async fn resident_usage(
+        &self,
+        task_id: Option<&str>,
+        project_folder: Option<&Path>,
+    ) -> RuntimeResult<ResidentUsage> {
+        let snapshot = self.snapshot_for_task(task_id, project_folder).await?;
+        let used = snapshot.resident_instructions.chars().count();
+        Ok(ResidentUsage {
+            used_chars: used,
+            limit_chars: MAX_RESIDENT_CHARS_TOTAL,
+            warnings: snapshot.warnings.clone(),
+        })
+    }
+
+    /// Preview the resident instructions a model would receive for a given project folder.
+    /// Calls the same `snapshot_for_task` path used in real conversations.
+    pub async fn resident_preview_for_project(
+        &self,
+        project_folder: Option<&Path>,
+    ) -> RuntimeResult<ResidentPreview> {
+        let snapshot = self.snapshot_for_task(None, project_folder).await?;
+        Ok(ResidentPreview {
+            resident_instructions: snapshot.resident_instructions.clone(),
+            skill_names: snapshot
+                .skills
+                .iter()
+                .filter(|s| s.enabled && s.tier_info.resident_content.is_some())
+                .map(|s| s.name.clone())
+                .collect(),
+            warnings: snapshot.warnings.clone(),
+        })
     }
 }
 
@@ -950,7 +1660,7 @@ mod tests {
         write_skill(&project_a, "shared-skill", "project-a");
         write_skill(&project_b, "shared-skill", "project-b");
 
-        let service = SkillService::new(Some(&home), Some(&startup), 10_000);
+        let service = SkillService::new(Some(&home), Some(&startup), None, 10_000);
         let from_a = service
             .read_for_workspace("shared-skill", Some(&project_a))
             .await
@@ -972,5 +1682,329 @@ mod tests {
                 .source
                 .starts_with(project_b.to_string_lossy().as_ref())
         );
+    }
+
+    #[tokio::test]
+    async fn skill_read_validates_parameters_and_denies_path_traversal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let global_skills = temp.path().join("skills/global");
+        let skill_dir = global_skills.join("test-tool-skill");
+        fs::create_dir_all(skill_dir.join("examples")).expect("create examples dir");
+
+        fs::write(
+            skill_dir.join("core.md"),
+            "---\nname: test-tool-skill\ndescription: A test tool skill\n---\nCore instructions\n",
+        )
+        .expect("write core.md");
+
+        fs::write(
+            skill_dir.join("examples/fs_read.md"),
+            "Example content for fs_read",
+        )
+        .expect("write example");
+
+        let service = SkillService::new(None, None, Some(&global_skills), 10_000);
+
+        // 1. Valid read core
+        let core = service
+            .read_for_task(None, "test-tool-skill", Some("core"), None, None)
+            .await
+            .expect("read core");
+        assert!(core.instructions.contains("Core instructions"));
+
+        // 2. Valid read examples list
+        let examples_list = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), None, None)
+            .await
+            .expect("read examples list");
+        assert!(examples_list.instructions.contains("fs_read"));
+
+        // 3. Valid read specific example
+        let tool_example = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some("fs_read"), None)
+            .await
+            .expect("read example");
+        assert!(tool_example.instructions.contains("Example content for fs_read"));
+
+        // 4. Reject ..\ traversal
+        let err1 = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some(r"..\secret"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err1.code, "invalid_tool_name");
+
+        // 5. Reject ../ traversal
+        let err2 = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some("../secret"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err2.code, "invalid_tool_name");
+
+        // 6. Reject absolute path (Windows style)
+        let err3 = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some(r"C:\Windows\win.ini"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err3.code, "invalid_tool_name");
+
+        // 7. Reject absolute path (Unix style)
+        let err4 = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some("/etc/passwd"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err4.code, "invalid_tool_name");
+
+        // 8. Reject empty tool string
+        let err5 = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some(""), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err5.code, "invalid_tool_name");
+
+        // 9. Reject uppercase letters
+        let err6 = service
+            .read_for_task(None, "test-tool-skill", Some("examples"), Some("FS_READ"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err6.code, "invalid_tool_name");
+
+        // 10. Reject invalid tier
+        let err7 = service
+            .read_for_task(None, "test-tool-skill", Some("resident"), None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err7.code, "invalid_tier");
+
+        // 11. Reject invalid skill_id with ..
+        let err8 = service
+            .read_for_task(None, "../test-tool-skill", None, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err8.code, "invalid_skill_id");
+
+        // 12. Reject empty skill_id
+        let err9 = service
+            .read_for_task(None, "", None, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err9.code, "invalid_skill_id");
+    }
+
+    #[tokio::test]
+    async fn global_skills_read_in_place_and_missing_dir_handled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let global_skills = temp.path().join("skills/global");
+        let skill_dir = global_skills.join("in-place-skill");
+        fs::create_dir_all(skill_dir.join("examples")).expect("create dirs");
+
+        fs::write(
+            skill_dir.join("resident.md"),
+            "Resident in place guidance",
+        )
+        .expect("write resident");
+
+        fs::write(
+            skill_dir.join("core.md"),
+            "---\nname: in-place-skill\ndescription: In place test\n---\nCore instructions in place\n",
+        )
+        .expect("write core");
+
+        fs::write(
+            skill_dir.join("examples/run_test.md"),
+            "Example run test",
+        )
+        .expect("write example");
+
+        // Discovered from global_skills in-place
+        let service = SkillService::new(None, None, Some(&global_skills), 10_000);
+        let list = service.list().await.expect("list skills");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "in-place-skill");
+        assert!(list[0].has_resident);
+        assert!(list[0].has_core);
+        assert_eq!(list[0].examples, vec!["run_test"]);
+
+        let (resident_content, _) = service
+            .active_resident_instructions_for_task(None, None)
+            .await
+            .expect("resident instructions");
+        assert!(resident_content.contains("Resident in place guidance"));
+
+        // Missing global directory should be treated as empty without error
+        let missing_dir = temp.path().join("non_existent_skills");
+        let service_missing = SkillService::new(None, None, Some(&missing_dir), 10_000);
+        let list_empty = service_missing.list().await.expect("list missing dir");
+        assert!(list_empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_home_skills_do_not_use_resident() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let skill_dir = home.join(".agents/skills/home-skill");
+        fs::create_dir_all(&skill_dir).expect("create home skill dir");
+
+        fs::write(
+            skill_dir.join("resident.md"),
+            "Home resident instructions which must be ignored",
+        )
+        .expect("write resident");
+
+        fs::write(
+            skill_dir.join("core.md"),
+            "---\nname: home-skill\ndescription: Home skill\n---\nHome core instructions\n",
+        )
+        .expect("write core");
+
+        let empty_global = temp.path().join("global");
+        let service = SkillService::new(Some(&home), None, Some(&empty_global), 10_000);
+        let list = service.list().await.expect("list skills");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "home-skill");
+        assert!(!list[0].has_resident); // resident must be false / ignored
+
+        let (resident_content, warnings) = service
+            .active_resident_instructions_for_task(None, None)
+            .await
+            .expect("resident instructions");
+        assert!(!resident_content.contains("Home resident instructions"));
+        assert!(warnings.iter().any(|w| w.contains("ignored")));
+    }
+
+    #[test]
+    fn local_source_registration_and_validation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let empty_global = temp.path().join("global");
+        let service = SkillService::new(Some(&home), None, Some(&empty_global), 10_000);
+
+        // 1. Rejects path with ".."
+        let err_dotdot = service.add_local_source("C:/foo/../bar", "global").unwrap_err();
+        assert_eq!(err_dotdot.code, "invalid_local_source");
+
+        // 2. Rejects non-existent directory
+        let err_not_exist = service.add_local_source("C:/non/existent/path/never", "global").unwrap_err();
+        assert_eq!(err_not_exist.code, "invalid_local_source");
+
+        // 3. Rejects directory with no skills
+        let empty_folder = temp.path().join("empty_folder");
+        fs::create_dir_all(&empty_folder).expect("create empty folder");
+        let err_no_skills = service.add_local_source(empty_folder.to_str().unwrap(), "global").unwrap_err();
+        assert_eq!(err_no_skills.code, "invalid_local_source");
+
+        // 4. Accepts valid folder with at least one skill
+        let valid_source = temp.path().join("valid_skills");
+        let skill_a = valid_source.join("skill-a");
+        fs::create_dir_all(&skill_a).expect("create skill_a");
+        fs::write(
+            skill_a.join("core.md"),
+            "---\nname: skill-a\ndescription: Test A\n---\nCore instructions A\n",
+        )
+        .expect("write core");
+
+        let source = service.add_local_source(valid_source.to_str().unwrap(), "global").expect("add source");
+        assert_eq!(source.scope, "global");
+        assert!(!source.id.is_empty());
+
+        // 5. Rejects duplicate registration
+        let err_dup = service.add_local_source(valid_source.to_str().unwrap(), "global").unwrap_err();
+        assert_eq!(err_dup.code, "local_source_conflict");
+
+        // 6. Listed in list_local_sources
+        let sources = service.list_local_sources().expect("list sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, source.id);
+    }
+
+    #[test]
+    fn remove_local_source_only_deregisters_and_keeps_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let empty_global = temp.path().join("global");
+        let service = SkillService::new(Some(&home), None, Some(&empty_global), 10_000);
+
+        let source_folder = temp.path().join("my_skills");
+        let skill = source_folder.join("skill-keep");
+        fs::create_dir_all(&skill).expect("create skill");
+        let core_file = skill.join("core.md");
+        fs::write(
+            &core_file,
+            "---\nname: skill-keep\ndescription: Must keep\n---\nImportant instructions\n",
+        )
+        .expect("write core");
+
+        let added = service.add_local_source(source_folder.to_str().unwrap(), "global").expect("add source");
+        assert_eq!(service.list_local_sources().unwrap().len(), 1);
+
+        // Remove source
+        let removed = service.remove_local_source(&added.id).expect("remove source");
+        assert!(removed);
+        assert_eq!(service.list_local_sources().unwrap().len(), 0);
+
+        // Crucial test: Files on disk must STILL exist!
+        assert!(core_file.is_file(), "core.md must NOT be deleted upon source removal");
+        assert!(skill.is_dir(), "skill directory must NOT be deleted");
+
+        // Removing again returns false
+        assert!(!service.remove_local_source(&added.id).expect("remove again"));
+    }
+
+    #[test]
+    fn lint_local_source_reports_diagnostics_correctly() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let empty_global = temp.path().join("global");
+        let service = SkillService::new(Some(&home), None, Some(&empty_global), 10_000);
+
+        let source_folder = temp.path().join("lint_skills");
+        let skill = source_folder.join("bad-resident-skill");
+        fs::create_dir_all(&skill).expect("create skill");
+
+        // Write a resident.md that exceeds 300 chars to trigger a lint Error
+        let long_resident = "x".repeat(350);
+        fs::write(skill.join("resident.md"), &long_resident).expect("write resident");
+        // Use legacy SKILL.md to trigger a lint Warning
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: bad-resident-skill\ndescription: Bad resident\n---\nInstructions\n",
+        )
+        .expect("write SKILL.md");
+
+        let added = service.add_local_source(source_folder.to_str().unwrap(), "global").expect("add");
+
+        let lint_results = service.lint_local_source(&added.id).expect("lint source");
+        assert_eq!(lint_results.len(), 1);
+        let diags = &lint_results[0].diagnostics;
+
+        // Must report resident_too_long Error and legacy_skill_format Warning
+        assert!(diags.iter().any(|d| d.code == "resident_too_long" && d.severity == LintSeverity::Error));
+        assert!(diags.iter().any(|d| d.code == "legacy_skill_format" && d.severity == LintSeverity::Warning));
+    }
+
+    #[tokio::test]
+    async fn resident_usage_and_preview_work_accurately() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let global = temp.path().join("skills/global");
+        let skill = global.join("preview-skill");
+        fs::create_dir_all(&skill).expect("create skill");
+
+        fs::write(skill.join("resident.md"), "Strict rule: do not lie.").expect("write resident");
+        fs::write(
+            skill.join("core.md"),
+            "---\nname: preview-skill\ndescription: Test\n---\nCore\n",
+        )
+        .expect("write core");
+
+        let service = SkillService::new(None, None, Some(&global), 10_000);
+
+        // 1. resident_usage
+        let usage = service.resident_usage(None, None).await.expect("usage");
+        assert!(usage.used_chars > 0);
+        assert_eq!(usage.limit_chars, 800);
+
+        // 2. resident_preview_for_project
+        let preview = service.resident_preview_for_project(None).await.expect("preview");
+        assert!(preview.resident_instructions.contains("Strict rule: do not lie."));
+        assert_eq!(preview.skill_names, vec!["preview-skill"]);
     }
 }

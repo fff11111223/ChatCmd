@@ -288,7 +288,7 @@ tool_methods!(
     (
         skill_read,
         SkillArgs,
-        "Read a relevant matching skill. Required field: skillId; id is accepted as a compatibility alias."
+        "Read a relevant matching skill. Required field: skillId (or id). Optional fields: tier (\"core\" or \"examples\", default \"core\"), tool (tool name for example detail)."
     ),
     (
         task_get,

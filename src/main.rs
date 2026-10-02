@@ -177,6 +177,7 @@ async fn run_server(ready: Option<std::sync::mpsc::Sender<()>>) -> Result<()> {
         roots: vec![root.clone()],
         user_home: user_home(),
         repository_root: Some(root.clone()),
+        global_skills_dir: std::env::var_os("CHATCMD_GLOBAL_SKILLS_DIR").map(PathBuf::from),
         ..RuntimeConfig::default()
     };
     let workspace = WorkspaceService::new(&config.roots, policy_engine.clone())
@@ -222,6 +223,7 @@ async fn run_server(ready: Option<std::sync::mpsc::Sender<()>>) -> Result<()> {
     let skills = SkillService::new(
         config.user_home.as_deref(),
         Some(&root),
+        config.global_skills_dir.as_deref(),
         config.max_skill_characters,
     );
     let runtime = Arc::new(RuntimeHost::new(

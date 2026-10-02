@@ -16,6 +16,12 @@ pub struct SkillSummary {
     pub title: String,
     pub description: String,
     pub source: String,
+    #[serde(default)]
+    pub has_resident: bool,
+    #[serde(default)]
+    pub has_core: bool,
+    #[serde(default)]
+    pub examples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +32,8 @@ pub struct SkillReadResult {
     pub source: String,
     pub instructions: String,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub examples: Option<Vec<String>>,
 }
 
 pub trait TaskRuntime: Send + Sync {

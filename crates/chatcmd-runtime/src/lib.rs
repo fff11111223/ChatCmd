@@ -43,8 +43,9 @@ pub use project_context::{
 pub use services::ProcessService;
 pub use shell::ShellRuntime;
 pub use skill_service::{
-    ManagedSkill, SkillInstallCandidate, SkillInstallPreview, SkillOption, SkillOptionChoice,
-    SkillService,
+    LocalSkillSource, ManagedSkill, ResidentPreview, ResidentUsage, SkillInstallCandidate,
+    SkillInstallPreview, SkillLintDiagnostic, SkillOption, SkillOptionChoice, SkillService,
+    SkillSourceLintResult, SkillSourceType, LintSeverity,
 };
 pub use telemetry::*;
 pub use tool_result::*;

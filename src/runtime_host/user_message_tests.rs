@@ -78,7 +78,7 @@ pub(crate) async fn test_host() -> (RuntimeHost, String, TempDir) {
         2,
     );
     let process = ProcessService::new(policy);
-    let skills = SkillService::new(None, Some(&root), 10_000);
+    let skills = SkillService::new(None, Some(&root), None, 10_000);
     let (events, _) = broadcast::channel(16);
     (
         RuntimeHost::new(

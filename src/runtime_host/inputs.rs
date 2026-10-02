@@ -39,7 +39,11 @@ input!(StatInput {
 });
 input!(SkillInput {
     #[serde(alias = "id")]
-    skill_id: String
+    skill_id: String,
+    #[serde(default)]
+    tier: Option<String>,
+    #[serde(default)]
+    tool: Option<String>
 });
 input!(ProcessInput { process_id: u32 });
 input!(ArtifactInput {

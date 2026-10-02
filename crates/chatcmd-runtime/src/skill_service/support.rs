@@ -76,6 +76,27 @@ pub(super) fn skill_key(skill: &DiscoveredSkill) -> String {
 }
 
 pub(super) fn to_managed(skill: DiscoveredSkill) -> ManagedSkill {
+    let (warnings, errors): (Vec<_>, Vec<_>) = {
+        use crate::LintSeverity;
+        let diags = crate::skill_service::tier::inspect_skill_tier(
+            &skill.directory,
+            match skill.source.as_str() {
+                "global" => crate::SkillSourceType::Global,
+                "project" => crate::SkillSourceType::Project,
+                _ => crate::SkillSourceType::LegacyAgentOrCodex,
+            },
+        )
+        .1;
+        diags
+            .into_iter()
+            .partition(|d| d.severity == LintSeverity::Warning)
+    };
+    let resident_chars = skill
+        .tier_info
+        .resident_content
+        .as_deref()
+        .map(|c| c.chars().count());
+    let source_type = Some(skill.source.clone());
     ManagedSkill {
         id: skill.id,
         title: skill.title,
@@ -86,6 +107,15 @@ pub(super) fn to_managed(skill: DiscoveredSkill) -> ManagedSkill {
         enabled: skill.enabled,
         can_delete: skill.can_delete,
         options: skill.options,
+        source_type,
+        has_resident: skill.tier_info.has_resident
+            && skill.tier_info.resident_content.is_some(),
+        resident_chars,
+        has_core: skill.tier_info.has_core,
+        examples: skill.tier_info.examples,
+        overrides: skill.tier_info.overrides,
+        warnings: warnings.into_iter().map(|d| d.message).collect(),
+        errors: errors.into_iter().map(|d| d.message).collect(),
     }
 }
 

@@ -73,7 +73,7 @@ async fn git_status_uses_task_project_folder_when_cwd_is_omitted() {
         2,
     );
     let process = ProcessService::new(policy);
-    let skills = SkillService::new(None, Some(&root), 10_000);
+    let skills = SkillService::new(None, Some(&root), None, 10_000);
     let (events, _) = broadcast::channel(16);
     let host = RuntimeHost::new(
         repository,
