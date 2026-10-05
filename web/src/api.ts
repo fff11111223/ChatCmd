@@ -1,7 +1,7 @@
 import { tr } from './i18n';
 import type { CompactHistory, CompactJob } from './chatgpt/compact/types';
 import type { UpdateStatus } from './updates/types';
-import type { Agent, AgentInput, ChatGptBridge, ChatGptQueuedMessage, ChatGptRequest, CommandExecutionMode, LiveTerminalOutput, LocalSettings, McpStatus, Overview, PlanQuestion, PlanQuestionAnswer, PluginLink, ProblemDetails, SecretResult, Session, SessionDetail, Skill, SkillInstallPreview, SkillInstallResult, SkillOptionValue, Task, TaskActivityDetail, TaskDetail, TaskPage, Tool, ToolPreset, Tunnel, TunnelTestResult, UserSkill, WorkspaceProject } from './types';
+import type { Agent, AgentInput, ChatGptBridge, ChatGptQueuedMessage, ChatGptRequest, CommandExecutionMode, GlobalSkillDiagnostics, LiveTerminalOutput, LocalSettings, LocalSkillSource, McpStatus, Overview, PlanQuestion, PlanQuestionAnswer, PluginLink, ProblemDetails, ResidentPreview, ResidentUsage, SecretResult, Session, SessionDetail, Skill, SkillInstallPreview, SkillInstallResult, SkillOptionValue, SkillSourceLintResult, Task, TaskActivityDetail, TaskDetail, TaskPage, Tool, ToolPreset, Tunnel, TunnelTestResult, UserSkill, WorkspaceProject } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status?: number, public problem?: ProblemDetails) { super(message); this.name = 'ApiError'; }
@@ -146,6 +146,14 @@ export const api = {
   previewSkills: (repositoryUrl: string) => request<SkillInstallPreview>('/api/local/skills/preview', { method: 'POST', body: json({ repositoryUrl }) }),
   installSkills: (repositoryUrl: string, skillPaths: string[]) => request<SkillInstallResult>('/api/local/skills/install', { method: 'POST', body: json({ repositoryUrl, skillPaths }) }),
   deleteSkill: (id: string) => request<void>(`/api/local/skills/${item(id)}`, { method: 'DELETE' }),
+  localSources: () => request<LocalSkillSource[]>('/api/local/skills/sources'),
+  addLocalSource: (path: string, scope?: string) => request<LocalSkillSource>('/api/local/skills/sources', { method: 'POST', body: json({ path, scope }) }),
+  removeLocalSource: (id: string) => request<void>(`/api/local/skills/sources/${item(id)}`, { method: 'DELETE' }),
+  reloadLocalSource: (id: string) => request<void>(`/api/local/skills/sources/${item(id)}/reload`, { method: 'POST' }),
+  lintLocalSource: (id: string) => request<SkillSourceLintResult[]>(`/api/local/skills/sources/${item(id)}/lint`),
+  residentUsage: () => request<ResidentUsage>('/api/local/skills/resident-usage'),
+  residentPreview: (projectFolder?: string) => request<ResidentPreview>(`/api/local/skills/resident-preview${projectFolder ? `?projectFolder=${encodeURIComponent(projectFolder)}` : ''}`),
+  skillDiagnostics: () => request<GlobalSkillDiagnostics>('/api/local/skills/diagnostics'),
   settings: () => request<LocalSettings>('/api/local/settings'),
   saveSettings: (value: LocalSettings) => request<LocalSettings>('/api/local/settings', { method: 'PUT', body: json(value) }),
   uploadInterfaceFont: (file: File, family: string) => request<{ family: string; fileName: string; mimeType: string; size: number }>('/api/local/settings/interface-font', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-ChatCmd-Font-Filename': file.name, 'X-ChatCmd-Font-Family': family }, body: file }),

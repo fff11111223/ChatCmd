@@ -51,7 +51,32 @@ export interface LiveTerminalOutput { sessionId: Id; oldestAvailableSequence: nu
 export type SkillOptionValue = string | number | boolean;
 export interface SkillOptionChoice { value: string; label: string }
 export interface UserSkillOption { key: string; label: string; description?: string | null; type: 'select' | 'boolean' | 'text' | 'number'; value: SkillOptionValue; choices?: SkillOptionChoice[] | null }
-export interface UserSkill { id: Id; title: string; description?: string | null; iconUrl?: string | null; source: 'global' | 'workspace'; sourceUrl?: string | null; enabled: boolean; canDelete?: boolean; options: UserSkillOption[] }
+export interface UserSkill {
+  id: Id;
+  title: string;
+  description?: string | null;
+  iconUrl?: string | null;
+  source: 'global' | 'workspace' | string;
+  sourceUrl?: string | null;
+  enabled: boolean;
+  canDelete?: boolean;
+  options: UserSkillOption[];
+  sourceType?: 'global' | 'project' | 'workspace' | 'user_home' | string;
+  hasResident?: boolean;
+  residentChars?: number;
+  hasCore?: boolean;
+  examples?: string[];
+  overrides?: string;
+  warnings?: string[];
+  errors?: string[];
+}
+export interface LocalSkillSource { id: string; path: string; scope: string }
+export interface SkillLintDiagnostic { severity: 'warning' | 'error'; code: string; message: string; path?: string }
+export interface SkillSourceLintResult { skillName: string; path: string; diagnostics: SkillLintDiagnostic[] }
+export interface ResidentUsage { usedChars: number; limitChars: number; warnings: string[]; }
+export interface ResidentPreview { residentInstructions: string; skillNames: string[]; warnings: string[]; }
+export interface SkippedSkillDirectory { name: string; path: string; reason: string }
+export interface GlobalSkillDiagnostics { globalSkillsDir: string; skillCount: number; skippedSubdirectories: SkippedSkillDirectory[] }
 export interface SkillInstallCandidate { name: string; title: string; description: string; path: string; installed: boolean }
 export interface SkillInstallPreview { repositoryUrl: string; skills: SkillInstallCandidate[]; skippedInvalid: number }
 export interface SkillInstallResult { skills: UserSkill[] }

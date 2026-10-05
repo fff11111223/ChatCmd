@@ -186,6 +186,32 @@ pub(super) async fn browser_tool_call(
     let conversation_id: Option<String> = row.get("conversation_id");
     let task_id = task_id.unwrap();
 
+    let project_folder_str: Option<String> = match row.get::<Option<String>, _>("project_folder") {
+        Some(pf) if !pf.trim().is_empty() => Some(pf),
+        _ => sqlx::query_scalar("SELECT project_folder FROM tasks WHERE id=?")
+            .bind(&task_id)
+            .fetch_optional(state.repository.pool())
+            .await
+            .ok()
+            .flatten(),
+    };
+    let project_folder = project_folder_str.as_deref().map(std::path::Path::new);
+    let resident_footer = match state
+        .skills
+        .active_resident_instructions_for_task(Some(&task_id), project_folder)
+        .await
+    {
+        Ok((instructions, _warnings)) => {
+            let trimmed = instructions.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => None,
+    };
+
     // 6. Backend idempotency: if a tool_result already exists for this
     //    call_id, return it immediately without re-executing.
     let existing_result: Option<String> = sqlx::query_scalar(
@@ -215,6 +241,7 @@ pub(super) async fn browser_tool_call(
             "turnId": turn_id,
             "tool": tool,
             "result": result_content,
+            "residentFooter": resident_footer,
         })));
     }
 
@@ -266,6 +293,7 @@ pub(super) async fn browser_tool_call(
             "turnId": turn_id,
             "tool": tool,
             "result": guard_command_run_result_for_ai(tool, value),
+            "residentFooter": resident_footer,
         }))),
 
         Err(error) => Ok(Json(json!({
@@ -280,6 +308,147 @@ pub(super) async fn browser_tool_call(
                 "code": error.code,
                 "message": error.message,
             },
+            "residentFooter": resident_footer,
         }))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn browser_tool_call_includes_resident_footer_when_skill_has_resident() {
+        let (host, agent_id, directory) = crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(host.test_app_state(directory.path().join("chatcmd.db").display().to_string()));
+        let now = super::super::now_ms();
+
+        // Create global skill with resident.md
+        let global_skills_dir = state.skills.global_skills_dir();
+        let global_skill = global_skills_dir.join("global-resident-skill");
+        fs::create_dir_all(&global_skill).expect("create global skill");
+        fs::write(
+            global_skill.join("core.md"),
+            "---
+name: global-resident-skill
+description: Core
+---
+Core instructions
+",
+        )
+        .expect("write core");
+        fs::write(
+            global_skill.join("resident.md"),
+            "Strict safety rule: resident instructions active.",
+        )
+        .expect("write resident");
+
+        let task_id = "task-resident-test";
+        let request_id = "request-resident-test";
+        sqlx::query(
+            "INSERT INTO tasks(id,agent_id,device_id,title,source,status,generation,created_at_ms,updated_at_ms)              VALUES(?,?,?,'Resident test','chatgpt_web','running',1,?,?)",
+        )
+        .bind(task_id)
+        .bind(&agent_id)
+        .bind(state.device.id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("seed task");
+        sqlx::query(
+            "INSERT INTO chatgpt_bridge_requests(id,task_id,turn_id,agent_id,model,user_content,submitted_content,status,created_at_ms,updated_at_ms)              VALUES(?,?,?,?,'Auto','hello','hello','running',?,?)",
+        )
+        .bind(request_id)
+        .bind(task_id)
+        .bind("turn-resident-test")
+        .bind(&agent_id)
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("seed request");
+
+        // OK-ish call (may fail to read binary DB file — doesn't matter)
+        let payload = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_001".to_string(),
+            tool: "fs_read_text".to_string(),
+            arguments: json!({ "path": directory.path().join("chatcmd.db").to_string_lossy().to_string() }),
+        };
+        let response = browser_tool_call(axum::extract::State(state.clone()), Json(payload))
+            .await
+            .expect("tool call");
+        let res_val = &response.0;
+        let footer = res_val.get("residentFooter").and_then(Value::as_str);
+        assert!(footer.is_some(), "residentFooter should be present");
+        assert!(footer.unwrap().contains("Strict safety rule: resident instructions active."));
+
+        // Error call: residentFooter still present
+        let payload_err = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_002".to_string(),
+            tool: "fs_read_text".to_string(),
+            arguments: json!({ "path": "non-existent-file-path-xyz" }),
+        };
+        let err_response = browser_tool_call(axum::extract::State(state.clone()), Json(payload_err))
+            .await
+            .expect("err call");
+        let err_val = &err_response.0;
+        assert_eq!(err_val.get("ok").and_then(Value::as_bool), Some(false));
+        let err_footer = err_val.get("residentFooter").and_then(Value::as_str);
+        assert!(err_footer.is_some(), "residentFooter should be present on error response");
+        assert!(err_footer.unwrap().contains("Strict safety rule"));
+    }
+
+    #[tokio::test]
+    async fn browser_tool_call_resident_footer_absent_when_no_resident_skill() {
+        let (host, agent_id, directory) = crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(host.test_app_state(directory.path().join("chatcmd.db").display().to_string()));
+        let now = super::super::now_ms();
+
+        let task_id = "task-no-resident";
+        let request_id = "request-no-resident";
+        sqlx::query(
+            "INSERT INTO tasks(id,agent_id,device_id,title,source,status,generation,created_at_ms,updated_at_ms)              VALUES(?,?,?,'No resident','chatgpt_web','running',1,?,?)",
+        )
+        .bind(task_id)
+        .bind(&agent_id)
+        .bind(state.device.id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("seed task");
+        sqlx::query(
+            "INSERT INTO chatgpt_bridge_requests(id,task_id,turn_id,agent_id,model,user_content,submitted_content,status,created_at_ms,updated_at_ms)              VALUES(?,?,?,?,'Auto','hello','hello','running',?,?)",
+        )
+        .bind(request_id)
+        .bind(task_id)
+        .bind("turn-no-resident")
+        .bind(&agent_id)
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("seed request");
+
+        let payload = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_010".to_string(),
+            tool: "fs_read_text".to_string(),
+            arguments: json!({ "path": "non-existent" }),
+        };
+        let response = browser_tool_call(axum::extract::State(state.clone()), Json(payload))
+            .await
+            .expect("call");
+        let val = &response.0;
+        let footer = val.get("residentFooter");
+        assert!(
+            footer.map_or(true, |v| v.is_null()),
+            "residentFooter should be null when no resident skills"
+        );
     }
 }

@@ -126,12 +126,30 @@ pub struct ResidentUsage {
 }
 
 /// Preview of the resident instructions the model would receive.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResidentPreview {
     pub resident_instructions: String,
     pub skill_names: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+/// A subdirectory in the global skills directory that was skipped during discovery.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedSkillDirectory {
+    pub name: String,
+    pub path: String,
+    pub reason: String,
+}
+
+/// Read-only diagnostics for the global skills folder.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSkillDiagnostics {
+    pub global_skills_dir: String,
+    pub skill_count: usize,
+    pub skipped_subdirectories: Vec<SkippedSkillDirectory>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -1349,6 +1367,165 @@ impl SkillService {
             warnings: snapshot.warnings.clone(),
         })
     }
+
+    /// Return read-only diagnostics for the configured global skills directory.
+    /// Only returns directory names, paths, and skip reasons; never file contents.
+    pub fn global_diagnostics(&self) -> RuntimeResult<GlobalSkillDiagnostics> {
+        let global_dir = self.global_skills_dir.clone();
+        let global_skills_dir = global_dir.to_string_lossy().into_owned();
+        if !global_dir.is_dir() {
+            return Ok(GlobalSkillDiagnostics {
+                global_skills_dir,
+                skill_count: 0,
+                skipped_subdirectories: Vec::new(),
+            });
+        }
+
+        let settings = self.load_settings()?;
+        let entries = match fs::read_dir(&global_dir) {
+            Ok(e) => e,
+            Err(_) => {
+                return Ok(GlobalSkillDiagnostics {
+                    global_skills_dir,
+                    skill_count: 0,
+                    skipped_subdirectories: Vec::new(),
+                });
+            }
+        };
+
+        let mut subdirectories: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.path())
+            .collect();
+        subdirectories.sort_by_key(|p| {
+            p.file_name()
+                .map(|v| v.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        });
+
+        let mut skill_count = 0;
+        let mut skipped_subdirectories = Vec::new();
+        let mut seen_names = HashSet::new();
+
+        for dir in subdirectories {
+            let dir_name = dir
+                .file_name()
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let dir_path = dir.to_string_lossy().into_owned();
+
+            if dir_name.starts_with('.') {
+                skipped_subdirectories.push(SkippedSkillDirectory {
+                    name: dir_name,
+                    path: dir_path,
+                    reason: "Hidden or system directory (starts with '.')".into(),
+                });
+                continue;
+            }
+
+            let skill_file = if dir.join("core.md").is_file() {
+                dir.join("core.md")
+            } else if dir.join("SKILL.md").is_file() {
+                dir.join("SKILL.md")
+            } else {
+                skipped_subdirectories.push(SkippedSkillDirectory {
+                    name: dir_name,
+                    path: dir_path,
+                    reason: "Missing SKILL.md or core.md".into(),
+                });
+                continue;
+            };
+
+            let meta = match fs::metadata(&skill_file) {
+                Ok(m) => m,
+                Err(err) => {
+                    skipped_subdirectories.push(SkippedSkillDirectory {
+                        name: dir_name,
+                        path: dir_path,
+                        reason: format!("Cannot read file metadata: {err}"),
+                    });
+                    continue;
+                }
+            };
+
+            if meta.len() > MAX_SKILL_BYTES {
+                skipped_subdirectories.push(SkippedSkillDirectory {
+                    name: dir_name,
+                    path: dir_path,
+                    reason: format!(
+                        "Skill instruction file exceeds limit of {} MB",
+                        MAX_SKILL_BYTES / 1_000_000
+                    ),
+                });
+                continue;
+            }
+
+            let content = match fs::read_to_string(&skill_file) {
+                Ok(c) => c,
+                Err(err) => {
+                    skipped_subdirectories.push(SkippedSkillDirectory {
+                        name: dir_name,
+                        path: dir_path,
+                        reason: format!("Cannot read file: {err}"),
+                    });
+                    continue;
+                }
+            };
+
+            let frontmatter = parse_frontmatter(&content);
+            let name = frontmatter
+                .get("name")
+                .cloned()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| dir_name.clone());
+
+            if !valid_skill_name(&name) {
+                skipped_subdirectories.push(SkippedSkillDirectory {
+                    name: dir_name,
+                    path: dir_path,
+                    reason: format!(
+                        "Invalid skill name '{name}' (must be 1-64 chars, lowercase alphanumeric, underscore, hyphen)"
+                    ),
+                });
+                continue;
+            }
+
+            // Check if disabled in settings
+            let key = format!("global:{}", dir.to_string_lossy());
+            if let Some(stored) = settings.skills.get(&key) {
+                if !stored.enabled {
+                    skipped_subdirectories.push(SkippedSkillDirectory {
+                        name: dir_name,
+                        path: dir_path,
+                        reason: format!("Disabled in skill settings (skill '{name}')"),
+                    });
+                    continue;
+                }
+            }
+
+            // Check if duplicate skill name within global directory
+            let name_lower = name.to_lowercase();
+            if !seen_names.insert(name_lower) {
+                skipped_subdirectories.push(SkippedSkillDirectory {
+                    name: dir_name,
+                    path: dir_path,
+                    reason: format!(
+                        "Duplicate skill name '{name}' (shadowed by another directory)"
+                    ),
+                });
+                continue;
+            }
+
+            skill_count += 1;
+        }
+
+        Ok(GlobalSkillDiagnostics {
+            global_skills_dir,
+            skill_count,
+            skipped_subdirectories,
+        })
+    }
 }
 
 async fn clone_repository(source: &GitHubSource) -> RuntimeResult<tempfile::TempDir> {
@@ -2006,5 +2183,38 @@ mod tests {
         let preview = service.resident_preview_for_project(None).await.expect("preview");
         assert!(preview.resident_instructions.contains("Strict rule: do not lie."));
         assert_eq!(preview.skill_names, vec!["preview-skill"]);
+    }
+
+    #[test]
+    fn global_diagnostics_reports_skills_and_skipped_subdirectories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let global = temp.path().join("skills/global");
+
+        // 1. Valid skill
+        let valid_skill = global.join("valid-skill");
+        fs::create_dir_all(&valid_skill).expect("create valid skill");
+        fs::write(
+            valid_skill.join("core.md"),
+            "---\nname: valid-skill\ndescription: Valid\n---\nCore\n",
+        )
+        .expect("write core");
+
+        // 2. Hidden directory
+        let hidden_dir = global.join(".system_store");
+        fs::create_dir_all(&hidden_dir).expect("create hidden dir");
+
+        // 3. Missing SKILL.md/core.md
+        let missing_md = global.join("empty-skill");
+        fs::create_dir_all(&missing_md).expect("create empty dir");
+
+        let service = SkillService::new(None, None, Some(&global), 10_000);
+        let diags = service.global_diagnostics().expect("diagnostics");
+
+        assert_eq!(diags.skill_count, 1);
+        assert_eq!(diags.skipped_subdirectories.len(), 2);
+
+        let skipped_names: Vec<_> = diags.skipped_subdirectories.iter().map(|s| s.name.as_str()).collect();
+        assert!(skipped_names.contains(&".system_store"));
+        assert!(skipped_names.contains(&"empty-skill"));
     }
 }

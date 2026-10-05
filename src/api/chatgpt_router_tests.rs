@@ -312,3 +312,30 @@ async fn gui_session_and_local_client_marker_remain_required() {
         StatusCode::FORBIDDEN
     );
 }
+
+#[tokio::test]
+async fn skills_diagnostics_enforces_auth_and_denies_extension_caller() {
+    let (state, app, _directory) = fixture("completed").await;
+    let path = "/api/local/skills/diagnostics";
+
+    // 1. Without login (no cookie) -> 401 Unauthorized
+    let (status, _) = gui_get(&app, path, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // 2. Extension caller -> 403 Forbidden
+    let response = extension_request(&app, "GET", path, json!({})).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // 3. Normal local-ui connection with valid login -> 200 OK
+    let token = state
+        .gui_auth
+        .setup_password("diagnostics-test-password".to_owned())
+        .await
+        .expect("setup password");
+    let cookie = format!("chatcmd_gui_session={token}");
+    let (status, body) = gui_get(&app, path, Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("globalSkillsDir").is_some());
+    assert!(body.get("skillCount").is_some());
+    assert!(body.get("skippedSubdirectories").is_some());
+}

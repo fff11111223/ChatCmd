@@ -398,3 +398,16 @@ pub(super) async fn resident_preview(
     ))
 }
 
+/// GET /skills/diagnostics — read-only diagnostics of the global skills directory.
+pub(super) async fn skill_diagnostics(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, Problem> {
+    let diags = state
+        .skills
+        .global_diagnostics()
+        .map_err(runtime_problem)?;
+    Ok(Json(
+        serde_json::to_value(&diags).unwrap_or(Value::Null),
+    ))
+}
+

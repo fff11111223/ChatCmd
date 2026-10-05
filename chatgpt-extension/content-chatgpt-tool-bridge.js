@@ -189,21 +189,82 @@
 
     // Build the combined result block.
     const blocks = [];
+    let anyError = false;
+    let residentFooter = null;
+    const errorTools = [];
+
     for (let i = 0; i < calls.length; i++) {
       const call = calls[i];
       const outcome = results[i];
       if (outcome.status === 'fulfilled') {
         const r = outcome.value;
         blocks.push(formatResult(call.id, call.tool, r?.ok === true, r?.result, r?.error));
+        if (r?.ok !== true) {
+          anyError = true;
+          errorTools.push(call.tool);
+        }
+        // Use the last non-null residentFooter seen across all responses.
+        if (r?.residentFooter) {
+          residentFooter = r.residentFooter;
+        }
       } else {
         blocks.push(formatResult(call.id, call.tool, false, null, { message: String(outcome.reason?.message || outcome.reason || 'Unknown error') }));
+        anyError = true;
+        errorTools.push(call.tool);
       }
     }
 
-    const reply = blocks.join('\n\n');
+    // Compute next_id from the max numeric suffix seen in all call IDs in text.
+    let nextId = null;
+    try {
+      const idPattern = /\bcall_(\d+)\b/g;
+      let maxNum = -1;
+      let m;
+      while ((m = idPattern.exec(text)) !== null) {
+        const n = parseInt(m[1], 10);
+        if (n > maxNum) maxNum = n;
+      }
+      // Also check call IDs from results.
+      for (const call of calls) {
+        const dm = call.id.match(/^call_(\d+)$/);
+        if (dm) {
+          const n = parseInt(dm[1], 10);
+          if (n > maxNum) maxNum = n;
+        }
+      }
+      if (maxNum >= 0) {
+        const digits = String(maxNum).length;
+        nextId = 'call_' + String(maxNum + 1).padStart(digits, '0');
+      }
+    } catch { /* ignore */ }
+
+    // Assemble reply: tool result blocks first, then [ChatCMD 提醒] footer.
+    let reply = blocks.join('\n\n');
+
+    const footerLines = [];
+    if (residentFooter) {
+      footerLines.push(residentFooter);
+    }
+    if (nextId) {
+      footerLines.push(`next_id: ${nextId}`);
+    }
+    if (anyError && errorTools.length > 0) {
+      const toolList = [...new Set(errorTools)];
+      const hints = toolList.map((t) =>
+        `如工具 ${t} 失敗，請用 skill_read(tier="core", tool="${t}") 取得說明` +
+        (t ? `；若有 examples/${t}.md，請確認 tier 與 tool 參數用法` : '')
+      );
+      footerLines.push(hints.join('；'));
+    }
+
+    if (footerLines.length > 0) {
+      reply += '\n\n[ChatCMD 提醒]\n' + footerLines.join('\n');
+    }
+
     await submitFn(reply);
     return true;
   }
+
 
   function reset() {
     executedCallIds.clear();
