@@ -35,9 +35,55 @@
   // ── Parsing ────────────────────────────────────────────────────────────
 
   /**
+   * Scans a string starting from `fromIndex` to locate the first balanced JSON
+   * object (matching '{' and '}'), properly ignoring braces and code fences inside
+   * string literals.
+   */
+  function extractJsonObject(str, fromIndex) {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let start = -1;
+
+    for (let i = fromIndex; i < str.length; i++) {
+      const ch = str[i];
+      if (start === -1) {
+        if (ch === '{') {
+          start = i;
+          depth = 1;
+        }
+        continue;
+      }
+
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (ch === '\\') {
+          escape = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+      } else {
+        if (ch === '"') {
+          inString = true;
+        } else if (ch === '{') {
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            return { json: str.slice(start, i + 1), startIndex: start, endIndex: i };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Extract all tool-call descriptors from `text`.
    * Matches ```chatcmd_tool_call ... ``` or [[CHATCMD_TOOL_CALL:{...}]]
    * or raw JSON containing "tool" and "id" when wrapped in code blocks.
+   * Handles JSON strings containing triple backticks (```) safely without premature cutoff.
    */
   function parseToolCalls(text) {
     if (!text || typeof text !== 'string') return [];
@@ -73,17 +119,37 @@
       }
     }
 
-    // 1. Fenced blocks: ```chatcmd_tool_call ... ``` (with optional spaces/newlines)
-    const fencedPattern = /`{3,}\s*chatcmd_tool_call\b[\s\S]*?\n([\s\S]*?)`{3,}/gi;
+    // 1. Fenced blocks: ```chatcmd_tool_call ...
+    // Arguments inside the JSON object may contain triple backticks (e.g. file content
+    // containing markdown code blocks). We locate the opener, then use balanced JSON
+    // object extraction starting at '{' instead of a non-greedy regex match to '```'.
+    const fencedOpener = /`{3,}\s*chatcmd_tool_call\b/gi;
     let m;
-    while ((m = fencedPattern.exec(text)) !== null) {
-      tryAdd(m[1]);
+    while ((m = fencedOpener.exec(text)) !== null) {
+      const braceIndex = text.indexOf('{', fencedOpener.lastIndex);
+      if (braceIndex !== -1) {
+        const pre = text.slice(fencedOpener.lastIndex, braceIndex);
+        if (!pre.includes('```')) {
+          const extracted = extractJsonObject(text, braceIndex);
+          if (extracted) {
+            tryAdd(extracted.json);
+            fencedOpener.lastIndex = Math.max(fencedOpener.lastIndex, extracted.endIndex + 1);
+          }
+        }
+      }
     }
 
     // 2. Inline tags: [[CHATCMD_TOOL_CALL:{...}]]
-    const inlinePattern = /\[\[CHATCMD_TOOL_CALL:(\{[\s\S]*?\})\]\]/gi;
-    while ((m = inlinePattern.exec(text)) !== null) {
-      tryAdd(m[1]);
+    const inlineOpener = /\[\[CHATCMD_TOOL_CALL:/gi;
+    while ((m = inlineOpener.exec(text)) !== null) {
+      const braceIndex = text.indexOf('{', inlineOpener.lastIndex);
+      if (braceIndex !== -1 && braceIndex - inlineOpener.lastIndex < 10) {
+        const extracted = extractJsonObject(text, braceIndex);
+        if (extracted) {
+          tryAdd(extracted.json);
+          inlineOpener.lastIndex = Math.max(inlineOpener.lastIndex, extracted.endIndex + 1);
+        }
+      }
     }
 
     // 3. Fallback: Any JSON code block with "tool" and "id".
@@ -91,17 +157,25 @@
     //    chatcmd_tool_call (e.g. chatcmd_tool_result), to prevent result blocks from
     //    being mistakenly re-dispatched as new calls after reset().
     if (calls.length === 0) {
-      const genericBlockPattern = /`{3,}([^\n`]*)\n([\s\S]*?)`{3,}/gi;
-      while ((m = genericBlockPattern.exec(text)) !== null) {
+      const genericOpener = /`{3,}([^\n`]*)\n/gi;
+      while ((m = genericOpener.exec(text)) !== null) {
         const tag = m[1].trim().toLowerCase();
-        // Skip blocks that are explicitly tagged as non-call chatcmd protocol blocks.
         if (tag.startsWith('chatcmd_') && tag !== 'chatcmd_tool_call') {
           if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipping block tagged', JSON.stringify(tag), { reason: 'tagged_non_call' });
           continue;
         }
-        const candidate = m[2].trim();
-        if (candidate.includes('"tool"') && candidate.includes('"id"')) {
-          tryAdd(candidate);
+        const braceIndex = text.indexOf('{', genericOpener.lastIndex);
+        if (braceIndex !== -1) {
+          const pre = text.slice(genericOpener.lastIndex, braceIndex);
+          if (!pre.includes('```')) {
+            const extracted = extractJsonObject(text, braceIndex);
+            if (extracted) {
+              if (extracted.json.includes('"tool"') && extracted.json.includes('"id"')) {
+                tryAdd(extracted.json);
+              }
+              genericOpener.lastIndex = Math.max(genericOpener.lastIndex, extracted.endIndex + 1);
+            }
+          }
         }
       }
     }
@@ -313,6 +387,7 @@
   // ── Public API ─────────────────────────────────────────────────────────
 
   globalThis.ChatCmdToolBridge = Object.freeze({
+    parseToolCalls,
     hasPendingToolCalls,
     runPendingCalls,
     reset,
