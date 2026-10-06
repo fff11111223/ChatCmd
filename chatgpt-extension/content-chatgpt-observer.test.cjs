@@ -203,3 +203,36 @@ test('binds tool result turn even when ChatGPT renders as a markdown code block 
   assert.equal(capture.hasTurn, true);
   assert.equal(capture.answer, 'Second turn response');
 });
+
+test('multi-turn: turn-2 observer does not bind to turn-1 tool result and stays active', async (t) => {
+  const env = setup(t,
+    user('prompt-1', 'Initial prompt') +
+    assistant('resp-1', '<div class="markdown">First response</div>') +
+    `<section data-testid="conversation-turn-tool-1"><div data-message-author-role="user" data-message-id="tool-user-1"><pre><code class="language-chatcmd_tool_result">{"id":"call_1","tool":"fs_search","ok":true,"content":"[{\\"file\\":\\"a.txt\\"}]"}</code></pre><p>[ChatCMD 提醒]\nnext_id: call_2</p></div></section>` +
+    assistant('resp-2', '<div class="markdown">Found a.txt, calling tool 2</div>')
+  );
+
+  // Turn 2 submits tool 2 result
+  const toolResult2 = '```chatcmd_tool_result\n{"id":"call_2","tool":"fs_read_text","ok":true,"content":"file contents"}\n```\n\n[ChatCMD 提醒]\nnext_id: call_3';
+  const capture2 = env.window.ChatCmdObserver.create('request-tool-2', toolResult2);
+  t.after(() => capture2.stop());
+  await capture2.bind();
+
+  // MUST NOT bind to tool-user-1!
+  assert.equal(capture2.userMessageId, null, 'turn 2 observer must not bind to turn 1 tool result');
+  assert.equal(capture2.hasTurn, false, 'turn 2 observer must not adopt turn 1 assistant response');
+  assert.equal(capture2.active, true, 'turn 2 observer must remain active');
+
+  // Now ChatGPT renders turn-2 user bubble
+  env.add(`<section data-testid="conversation-turn-tool-2"><div data-message-author-role="user" data-message-id="tool-user-2"><pre><code class="language-chatcmd_tool_result">{"id":"call_2","tool":"fs_read_text","ok":true,"content":"file contents"}</code></pre><p>[ChatCMD 提醒]\nnext_id: call_3</p></div></section>`);
+  capture2.scan();
+  assert.equal(capture2.userMessageId, 'tool-user-2', 'turn 2 observer must bind to turn 2 user bubble');
+  assert.equal(capture2.active, true, 'turn 2 observer must stay active after binding');
+
+  // Turn-2 assistant response appears
+  env.add(assistant('resp-3', '<div class="markdown"><p>Third turn response</p></div>'));
+  await capture2.flush();
+  assert.equal(capture2.hasTurn, true);
+  assert.equal(capture2.answer, 'Third turn response');
+  assert.equal(capture2.active, true);
+});

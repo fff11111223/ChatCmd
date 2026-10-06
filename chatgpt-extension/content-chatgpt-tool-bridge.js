@@ -15,6 +15,7 @@
  * to this bridge when hasPendingToolCalls() returns true.
  */
 (() => {
+  const _dbg = () => { try { return localStorage.getItem('chatcmd-debug') === '1'; } catch { return false; } };
   // ── Protocol patterns ──────────────────────────────────────────────────
   //
   // ChatGPT emits tool calls wrapped in a custom fenced-code block:
@@ -57,10 +58,19 @@
         const obj = JSON.parse(candidate);
         const id = String(obj.id || '').trim();
         const tool = String(obj.tool || '').trim();
-        if (!id || !tool || seen.has(id)) return;
+        if (!id || !tool) {
+          if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipped malformed block (missing id or tool)', { id, tool, reason: 'missing_id_or_tool' });
+          return;
+        }
+        if (seen.has(id)) {
+          if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipped duplicate call in same message', { callId: id, tool, reason: 'duplicate_in_same_message' });
+          return;
+        }
         seen.add(id);
         calls.push({ id, tool, arguments: obj.arguments || {} });
-      } catch { /* malformed JSON — skip */ }
+      } catch (err) {
+        if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipped block due to JSON parse error', { error: String(err?.message || err), reason: 'json_parse_error' });
+      }
     }
 
     // 1. Fenced blocks: ```chatcmd_tool_call ... ``` (with optional spaces/newlines)
@@ -76,11 +86,20 @@
       tryAdd(m[1]);
     }
 
-    // 3. Fallback: Any JSON code block with "tool" and "id"
+    // 3. Fallback: Any JSON code block with "tool" and "id".
+    //    IMPORTANT: skip blocks tagged with chatcmd_* language identifiers other than
+    //    chatcmd_tool_call (e.g. chatcmd_tool_result), to prevent result blocks from
+    //    being mistakenly re-dispatched as new calls after reset().
     if (calls.length === 0) {
-      const genericBlockPattern = /`{3,}[^\n]*\n([\s\S]*?)`{3,}/gi;
+      const genericBlockPattern = /`{3,}([^\n`]*)\n([\s\S]*?)`{3,}/gi;
       while ((m = genericBlockPattern.exec(text)) !== null) {
-        const candidate = m[1].trim();
+        const tag = m[1].trim().toLowerCase();
+        // Skip blocks that are explicitly tagged as non-call chatcmd protocol blocks.
+        if (tag.startsWith('chatcmd_') && tag !== 'chatcmd_tool_call') {
+          if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipping block tagged', JSON.stringify(tag), { reason: 'tagged_non_call' });
+          continue;
+        }
+        const candidate = m[2].trim();
         if (candidate.includes('"tool"') && candidate.includes('"id"')) {
           tryAdd(candidate);
         }
@@ -95,7 +114,14 @@
    * yet been dispatched.
    */
   function hasPendingToolCalls(text) {
-    return parseToolCalls(text).some((c) => !executedCallIds.has(c.id));
+    const parsed = parseToolCalls(text);
+    const pending = parsed.filter((c) => !executedCallIds.has(c.id));
+    if (_dbg() && parsed.length > 0 && pending.length === 0) {
+      for (const c of parsed) {
+        console.log('[ChatCMD ToolBridge] hasPendingToolCalls: skipped already-executed call', { callId: c.id, tool: c.tool, reason: 'already_in_executedCallIds' });
+      }
+    }
+    return pending.length > 0;
   }
 
   // ── Formatting ─────────────────────────────────────────────────────────
@@ -139,11 +165,7 @@
    * Returns a promise that resolves to { ok, result?, error? }.
    */
   function executeToolCall(requestId, call) {
-    console.log('[ChatCMD ToolBridge] executeToolCall:', {
-      requestId,
-      call,
-    });
-    
+    if (_dbg()) console.log('[ChatCMD ToolBridge] executeToolCall:', { requestId, call });
     return new Promise((resolve, reject) => {
       globalThis.ChatCmdRuntime.sendMessage({
         type: 'chatcmd-chatgpt-tool-call',
@@ -165,10 +187,27 @@
    * Returns true if at least one tool call was dispatched.
    */
   async function runPendingCalls(requestId, text, submitFn) {
-    const calls = parseToolCalls(text).filter((c) => !executedCallIds.has(c.id));
-    if (!calls.length) return false;
+    const allParsed = parseToolCalls(text);
+    const calls = allParsed.filter((c) => {
+      if (executedCallIds.has(c.id)) {
+        if (_dbg()) console.log('[ChatCMD ToolBridge] runPendingCalls: skipping already-executed call', c.id, 'tool=', c.tool, 'requestId=', requestId, 'reason=already_in_executedCallIds');
+        return false;
+      }
+      return true;
+    });
+    if (!calls.length) {
+      if (_dbg()) {
+        if (allParsed.length > 0) {
+          console.log('[ChatCMD ToolBridge] runPendingCalls: all tool calls skipped', { requestId, totalParsed: allParsed.length, reason: 'all_calls_already_executed' });
+        } else {
+          console.log('[ChatCMD ToolBridge] runPendingCalls: no tool calls found in text', { requestId, reason: 'no_calls_parsed' });
+        }
+      }
+      return false;
+    }
 
     // Mark all as dispatched immediately (first-layer dedupe).
+    if (_dbg()) console.log('[ChatCMD ToolBridge] runPendingCalls: dispatching', { requestId, callIds: calls.map((c) => `${c.id}(${c.tool})`), allParsedIds: allParsed.map((c) => c.id) });
     for (const c of calls) {
       executedCallIds.add(c.id);
     }
@@ -277,5 +316,9 @@
     hasPendingToolCalls,
     runPendingCalls,
     reset,
+    /** Diagnostic: returns the call IDs parseToolCalls finds in `text`. */
+    parseToolCallIds: (text) => parseToolCalls(text).map((c) => `${c.id}(${c.tool})`),
+    /** Diagnostic: live snapshot of executedCallIds (read-only). */
+    get _executedCallIds() { return new Set(executedCallIds); },
   });
 })();

@@ -32,27 +32,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
     }
     if (activeRequest && Date.now() - activeRequest.startedAt < 1_500) {
-      sendResponse({ ok: false, error: 'This ChatGPT tab is processing another request.' });
-      return false;
+      sendResponse({ ok: false, error: 'This ChatGPT tab is processing another request.' }); return false;
     }
     if (document.documentElement?.dataset) document.documentElement.dataset.chatcmdRequestId = message.requestId;
     activeRequest?.observer?.stop();
     activeRequest = { id: message.requestId, stopRequested: false, retryCount: 0, resultReported: false, startedAt: Date.now() };
     void runRequest(message).finally(() => {
+      globalThis.ChatCmdToolBridge?.reset?.();
       if (activeRequest?.id === message.requestId) { activeRequest.observer?.finish(); activeRequest = null; }
     });
     sendResponse({ ok: true });
     return false;
   }
   if (message?.type === 'chatcmd-chatgpt-stop') {
-    if (!activeRequest || activeRequest.id !== message.requestId) {
-      sendResponse({ ok: false, error: 'No running ChatGPT turn was found on this tab.' });
-      return false;
-    }
-    activeRequest.stopRequested = true;
-    clickStopButton();
-    sendResponse({ ok: true });
-    return false;
+    if (!activeRequest || activeRequest.id !== message.requestId) { sendResponse({ ok: false, error: 'No running ChatGPT turn was found on this tab.' }); return false; }
+    activeRequest.stopRequested = true; clickStopButton(); sendResponse({ ok: true }); return false;
   }
   if (message?.type === 'chatcmd-chatgpt-ready') {
     const composer = findComposer();
@@ -84,9 +78,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') scheduleActiveRequestReconcile();
-});
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleActiveRequestReconcile(); });
 window.addEventListener('focus', scheduleActiveRequestReconcile);
 
 async function runRequest(message) {
@@ -147,7 +139,9 @@ async function runRequest(message) {
 
 function requestObservationLost(owner) {
   owner?.observer?.scan();
-  return activeRequest !== owner || Boolean(owner?.observer && !owner.observer.active);
+  if (activeRequest !== owner) { console.log('[ChatCMD] requestObservationLost: activeRequest changed', { ownerId: owner?.id, activeId: activeRequest?.id }); return true; }
+  if (owner?.observer && !owner.observer.active) { console.log('[ChatCMD] requestObservationLost: observer.active=false', { ownerId: owner?.id, hasTurn: owner.observer.hasTurn, answerLen: owner.observer.answer?.length }); return true; }
+  return false;
 }
 
 function scheduleActiveRequestReconcile() {
@@ -206,14 +200,9 @@ function findComposerNearSendButton() {
   const scopes = [];
   const form = sendButton.closest('form');
   if (form) scopes.push(form);
-  for (let parent = sendButton.parentElement, depth = 0; parent && depth < 6; depth += 1, parent = parent.parentElement) {
-    if (!scopes.includes(parent)) scopes.push(parent);
-  }
+  for (let parent = sendButton.parentElement, depth = 0; parent && depth < 6; depth += 1, parent = parent.parentElement) if (!scopes.includes(parent)) scopes.push(parent);
   const generic = ['textarea', '[role="textbox"]', '.ProseMirror[contenteditable]', '[contenteditable="plaintext-only"]', '[contenteditable="true"]'];
-  for (const scope of scopes) {
-    const composer = findUsableComposer(scope, generic);
-    if (composer) return composer;
-  }
+  for (const scope of scopes) { const composer = findUsableComposer(scope, generic); if (composer) return composer; }
   return null;
 }
 
@@ -229,8 +218,7 @@ function isUsableComposer(element) {
 }
 
 function composerMissingMessage() {
-  const path = `${window.location.pathname}${window.location.search}` || '/';
-  return `Could not find the ChatGPT input on ${path}. Check that the first ChatGPT tab is on the chat interface and that you are signed in.`;
+  return `Could not find the ChatGPT input on ${window.location.pathname}${window.location.search || ''}. Check that the first ChatGPT tab is on the chat interface and that you are signed in.`;
 }
 
 async function selectModel(model) {
@@ -406,12 +394,10 @@ async function reportBrowserCompletion(requestId, assistantContent) {
 async function retryPrompt(requestId, content, reason, continuesPreviousProgress) {
   const composer = await waitForComposer();
   const retryCount = (activeRequest?.retryCount || 0) + 1;
-  setComposerText(composer, content);
-  await submitPrompt(composer);
+  setComposerText(composer, content); await submitPrompt(composer);
   if (activeRequest?.id === requestId) activeRequest.retryCount = retryCount;
   await progress({ requestId, stage: 'retrying', retryCount, reason, continuesPreviousProgress });
 }
-
 function unknownRequestState() { return { known: false, running: null, stopRequested: false, hasFinalResponse: false, active: null }; }
 function isTerminalRequestState(state) { return state.known && state.active !== true && (state.hasFinalResponse || (!state.running && !state.stopRequested)); }
 async function waitFor(factory, timeoutMs, message) {
@@ -436,8 +422,14 @@ function delay(ms) { return globalThis.ChatCmdCaptureClock?.sleep(ms) ?? new Pro
 
 async function executeToolLoop(owner, requestId, initialResult) {
   let currentResult = initialResult;
+  let previousAnswer = '';  // text returned by previous waitForAssistant; prevents stale-answer returns
+  let _turn = 0;
+  const _dbg = () => { try { return localStorage.getItem('chatcmd-debug') === '1'; } catch { return false; } };
+  if (_dbg()) console.log('[ChatCMD ToolLoop] start', { requestId, initialTextLen: initialResult.length, textTail: initialResult.slice(-120) });
   while (globalThis.ChatCmdToolBridge?.hasPendingToolCalls(currentResult)) {
+    _turn++;
     const assistantCount = assistantNodes().length;
+    if (_dbg()) console.log('[ChatCMD ToolLoop] turn-begin', { turn: _turn, requestId, assistantCount, textLen: currentResult.length, textTail: currentResult.slice(-120) });
     let submittedReply = '';
     const bridgeSubmit = async (replyText) => {
       const composer = await waitForComposer();
@@ -453,42 +445,50 @@ async function executeToolLoop(owner, requestId, initialResult) {
       await submitPrompt(composer);
     };
     const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(requestId, currentResult, bridgeSubmit);
-    if (!dispatched || requestObservationLost(owner)) return currentResult;
+    // After dispatch, only verify the request slot is still ours — the new observer hasn't had
+    // time to find its user node yet, so checking observer.active here would be a false positive.
+    if (!dispatched || activeRequest !== owner) { globalThis.ChatCmdToolBridge?.reset?.(); if (_dbg()) console.log('[ChatCMD ToolLoop] exit:no-dispatch-or-lost', { turn: _turn, requestId, dispatched, activeChanged: activeRequest !== owner }); return currentResult; }
     globalThis.ChatCmdToolBridge?.reset?.();
-    currentResult = await waitForAssistant(assistantCount, requestId, submittedReply);
-    if (requestObservationLost(owner)) return currentResult;
+    // previousAnswer: the answer from the previous waitForAssistant call ('' on turn 1).
+    // The monitor uses this to reject a stale answer that matches the previously consumed text.
+    currentResult = await waitForAssistant(assistantCount, requestId, submittedReply, previousAnswer);
+    previousAnswer = currentResult;  // update AFTER the call so the next turn sees this answer
+    if (_dbg()) console.log('[ChatCMD ToolLoop] turn-end', { turn: _turn, requestId, newTextLen: currentResult.length, textTail: currentResult.slice(-120) });
+    if (requestObservationLost(owner)) { globalThis.ChatCmdToolBridge?.reset?.(); if (_dbg()) console.log('[ChatCMD ToolLoop] exit:observation-lost', { turn: _turn, requestId }); return currentResult; }
   }
-  return currentResult;
+  if (_dbg()) console.log('[ChatCMD ToolLoop] done', { turn: _turn, requestId, finalTextLen: currentResult.length });
+  globalThis.ChatCmdToolBridge?.reset?.(); return currentResult;
 }
 
 async function adoptObservedRequest(request, user = null) {
-  if (activeRequest || !globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT)) return;
+  if (activeRequest || !globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT)) {
+    console.log('[ChatCMD] adoptObservedRequest: skipped native adoption', { active: Boolean(activeRequest) }); return;
+  }
   const owner = { id: request.id, stopRequested: request.status === 'stop_requested', resultReported: false, retryCount: 0, startedAt: Date.now() };
   activeRequest = owner;
+  globalThis.ChatCmdToolBridge?.reset?.();
   owner.observer = globalThis.ChatCmdObserver.create(request.id, request.submittedContent, {
-    resumed: !user || Boolean(globalThis.ChatCmdObserver.restore(request.id)), user, current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
-  });
+    resumed: !user || Boolean(globalThis.ChatCmdObserver.restore(request.id)), user, current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT) });
   try {
     document.documentElement.dataset.chatcmdRequestId = request.id;
     await owner.observer?.bind();
     const result = await waitForAssistant(0, request.id, request.submittedContent);
-    if (requestObservationLost(owner)) return;
+    if (requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost before tool loop', { requestId: request.id }); return; }
     const currentResult = await executeToolLoop(owner, request.id, result);
-    if (requestObservationLost(owner)) return;
+    if (requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost after tool loop', { requestId: request.id }); return; }
     const identity = currentConversationIdentity();
     await reportRequestResult({ requestId: request.id, status: owner.stopRequested ? 'stopped' : 'completed', conversationId: identity?.conversationId, conversationUrl: identity?.conversationUrl, assistantContent: currentResult });
   } catch (error) {
     globalThis.ChatCmdCaptureStatus?.report('error', errorMessage(error));
   } finally {
-    owner.observer?.finish();
-    if (activeRequest === owner) activeRequest = null;
+    globalThis.ChatCmdToolBridge?.reset?.();
+    owner.observer?.finish(); if (activeRequest === owner) activeRequest = null;
   }
 }
 globalThis.ChatCmdController = Object.freeze({
   get active() { return activeRequest; },
   current: () => globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
-  adopt: adoptObservedRequest,
-  findComposer, setComposerText, submitPrompt, selectModel,
+  adopt: adoptObservedRequest, findComposer, setComposerText, submitPrompt, selectModel,
   async pauseForCompact() {
     const owner = activeRequest;
     if (owner?.observer) { try { await owner.observer.flush?.(); } catch { /* ignore */ } owner.observer.stop(); }

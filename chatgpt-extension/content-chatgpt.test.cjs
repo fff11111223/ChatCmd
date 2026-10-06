@@ -354,3 +354,80 @@ test('page render bridge runs in MAIN at document_start while capture stays isol
   assert.match(recoverySource, /injectChatGptScripts/);
   assert.match(backgroundIoSource, /await injectChatGptScripts\(tabId\)/);
 });
+
+test('two-turn tool loop passes previous answer to second waitForAssistant call', async () => {
+  // Verify executeToolLoop tracks previousAnswer correctly so the monitor can reject stale answers.
+  const context = loadBridge();
+  prepareMonitor(context, { known: true, running: true, active: true });
+  vm.runInContext(`
+    globalThis.__waitPreviousAnswers = [];
+    const _turn1Answer = 'Answer from turn one';
+    const _turn2Answer = 'Answer from turn two';
+    let _waitCallCount = 0;
+    waitForAssistant = async (_count, _requestId, _submitted, previousAnswer) => {
+      _waitCallCount++;
+      globalThis.__waitPreviousAnswers.push(previousAnswer);
+      return _waitCallCount === 1 ? _turn1Answer : _turn2Answer;
+    };
+    waitForComposer = async () => ({});
+    submitPrompt = async () => {};
+    setComposerText = () => {};
+    globalThis.__results = [];
+    reportRequestResult = async (payload) => { globalThis.__results.push(payload); };
+    let _pendingCallCount = 0;
+    const _initialText = 'initial with tool call';
+    globalThis.ChatCmdToolBridge = {
+      hasPendingToolCalls(text) {
+        if (_pendingCallCount === 0 && text === _initialText) { _pendingCallCount++; return true; }
+        if (_pendingCallCount === 1 && text === _turn1Answer) { _pendingCallCount++; return true; }
+        return false;
+      },
+      runPendingCalls: async (_rid, _text, submitFn) => { await submitFn('[result]'); return true; },
+      reset() {},
+    };
+    globalThis.ChatCmdObserver = { create: () => ({ active: true, hasTurn: false, answer: '', bind: async () => {}, scan() {}, flush: async () => true, finish() {} }) };
+    globalThis.__toolLoopResult = null;
+    (async () => {
+      activeRequest = { id: 'request-1', stopRequested: false, retryCount: 0, resultReported: false, startedAt: Date.now() };
+      globalThis.__toolLoopResult = await executeToolLoop(activeRequest, 'request-1', _initialText);
+    })();
+  `, context);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(context.__waitPreviousAnswers[0], '',
+    'first waitForAssistant call must receive empty string as previousAnswer');
+  assert.equal(context.__waitPreviousAnswers[1], 'Answer from turn one',
+    'second waitForAssistant call must receive turn-1 answer as previousAnswer');
+  assert.equal(context.__toolLoopResult, 'Answer from turn two',
+    'tool loop must return turn-2 answer');
+});
+
+test('monitor does not return stale answer that equals previousAnswer', async () => {
+  // When recorder-inactive+hasTurn fires with an answer identical to previousAnswer,
+  // the monitor must wait for a fresh answer, not return the stale one.
+  const context = loadBridge();
+  prepareMonitor(context, { known: false, running: false, active: false });
+  vm.runInContext(`
+    const staleAnswer = 'Stale answer from turn one';
+    let _delayCalls = 0;
+    const _staleRecorder = {
+      active: false,
+      hasTurn: true,
+      get answer() { return staleAnswer; },
+      scan() {},
+      flush: async () => false,
+    };
+    activeRequest = { id: 'request-1', stopRequested: false, retryCount: 0, resultReported: false, observer: _staleRecorder };
+    globalThis.__monitorResult = undefined;
+    delay = async (ms) => { globalThis.__now += ms; _delayCalls++; if (_delayCalls >= 2) globalThis.__now = 9_999_999_999; };
+    (async () => {
+      try {
+        globalThis.__monitorResult = await waitForAssistant(0, 'request-1', '[tool result]', staleAnswer);
+      } catch (e) {
+        globalThis.__monitorResult = 'timeout';
+      }
+    })();
+  `, context);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.notEqual(context.__monitorResult, 'Stale answer from turn one',
+    'monitor must not return the stale answer that equals previousAnswer');
+});

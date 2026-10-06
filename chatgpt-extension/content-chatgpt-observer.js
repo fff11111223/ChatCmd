@@ -8,12 +8,13 @@
   function matchesSubmitted(dom, targetText, expectedContent) {
     const normTarget = dom.normalize(targetText);
     const normExpected = dom.normalize(expectedContent);
+    if (!normTarget || !normExpected) return false;
     if (normTarget === normExpected) return true;
     if (expectedContent.includes('chatcmd_tool_result')) {
       const stripped = dom.normalize(expectedContent.replace(/`{3,}(?:chatcmd_tool_result)?/g, ''));
-      if (normTarget === stripped || normTarget.includes(stripped) || stripped.includes(normTarget)) return true;
-      const idMatch = expectedContent.match(/"id"\s*:\s*"([^"]+)"/);
-      if (idMatch && normTarget.includes(idMatch[1])) return true;
+      if (normTarget === stripped || normTarget.includes(stripped)) return true;
+      const idMatches = [...expectedContent.matchAll(/"id"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+      if (idMatches.length > 0 && idMatches.some((id) => normTarget.includes(id))) return true;
     }
     return false;
   }
@@ -55,8 +56,7 @@
       const user = dom.latestUser();
       if (!user) return;
       if (!userId) {
-        const isTool = submittedContent.includes('chatcmd_tool_result');
-        if ((!resumed && !isTool && user.id === baseline) || !matchesSubmitted(dom, user.text, submittedContent)) return;
+        if ((!resumed && user.id === baseline) || !matchesSubmitted(dom, user.text, submittedContent)) return;
         userId = user.id;
         userNode = user.node;
         checkpoint();
