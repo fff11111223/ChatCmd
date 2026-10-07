@@ -458,12 +458,14 @@ fn resolve_workspace_root() -> Result<PathBuf> {
         std::fs::create_dir_all(&workspace).context("create packaged workspace")?;
         return workspace
             .canonicalize()
+            .map(chatcmd_runtime::normalize_path)
             .context("canonicalize packaged workspace");
     }
 
     std::env::current_dir()
         .context("resolve current workspace")?
         .canonicalize()
+        .map(chatcmd_runtime::normalize_path)
         .context("canonicalize workspace")
 }
 

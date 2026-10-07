@@ -178,25 +178,46 @@ impl Default for SkillSetting {
     }
 }
 
+/// Strips Windows extended-length prefix (`\\?\` or `//?/`) from a path.
+pub fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
+    let p = path.as_ref();
+    let s = p.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else if let Some(stripped) = s.strip_prefix("//?/") {
+        PathBuf::from(stripped)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 pub fn resolve_default_global_skills_dir(repository_root: Option<&Path>) -> PathBuf {
+    resolve_default_global_skills_dir_from(std::env::current_exe().ok().as_deref(), repository_root)
+}
+
+pub fn resolve_default_global_skills_dir_from(
+    exe: Option<&Path>,
+    repository_root: Option<&Path>,
+) -> PathBuf {
     if let Some(env_dir) = std::env::var_os("CHATCMD_GLOBAL_SKILLS_DIR").filter(|s| !s.is_empty()) {
-        return PathBuf::from(env_dir);
+        return normalize_path(PathBuf::from(env_dir));
     }
 
-    if let Ok(exe) = std::env::current_exe() {
+    if let Some(exe) = exe {
+        let exe = normalize_path(exe);
         let is_cargo_target = exe.components().any(|c| c.as_os_str() == "target");
         if is_cargo_target {
-            if let Some(repo) = repository_root {
-                return repo.join("skills").join("global");
-            }
             let mut current = exe.as_path();
             while let Some(parent) = current.parent() {
                 if parent.file_name().is_some_and(|n| n == "target") {
                     if let Some(project_root) = parent.parent() {
-                        return project_root.join("skills").join("global");
+                        return normalize_path(project_root.join("skills").join("global"));
                     }
                 }
                 current = parent;
+            }
+            if let Some(repo) = repository_root {
+                return normalize_path(repo.join("skills").join("global"));
             }
         } else {
             #[cfg(target_os = "macos")]
@@ -205,23 +226,25 @@ pub fn resolve_default_global_skills_dir(repository_root: Option<&Path>) -> Path
                     .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("app"))
             }) {
                 if let Some(parent) = app_bundle.parent() {
-                    return parent.join("skills").join("global");
+                    return normalize_path(parent.join("skills").join("global"));
                 }
             }
 
             if let Some(parent) = exe.parent() {
-                return parent.join("skills").join("global");
+                return normalize_path(parent.join("skills").join("global"));
             }
         }
     }
 
     if let Some(repo) = repository_root {
-        repo.join("skills").join("global")
+        normalize_path(repo.join("skills").join("global"))
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("skills")
-            .join("global")
+        normalize_path(
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("skills")
+                .join("global"),
+        )
     }
 }
 
@@ -284,30 +307,33 @@ impl SkillService {
         max_characters: usize,
     ) -> Self {
         let settings_path = user_home.map(|home| home.join(".chatcmd/skills.json"));
-        let effective_global = global_skills_dir
-            .map(PathBuf::from)
-            .or_else(|| {
-                settings_path.as_ref().and_then(|p| {
-                    if let Ok(content) = fs::read_to_string(p) {
-                        let s: SkillSettings = serde_json::from_str(&content).unwrap_or_default();
-                        s.global_skills_dir.map(PathBuf::from)
-                    } else {
-                        None
-                    }
+        let effective_global = normalize_path(
+            global_skills_dir
+                .map(PathBuf::from)
+                .or_else(|| {
+                    settings_path.as_ref().and_then(|p| {
+                        if let Ok(content) = fs::read_to_string(p) {
+                            let s: SkillSettings = serde_json::from_str(&content).unwrap_or_default();
+                            s.global_skills_dir.map(PathBuf::from)
+                        } else {
+                            None
+                        }
+                    })
                 })
-            })
-            .unwrap_or_else(|| resolve_default_global_skills_dir(repository_root));
+                .unwrap_or_else(|| resolve_default_global_skills_dir(repository_root)),
+        );
 
         let mut roots = Vec::new();
         let project_skills_root = repository_root
-            .map(|repo| repo.join("skills").join("projects"))
+            .map(|repo| normalize_path(repo).join("skills").join("projects"))
             .or_else(|| {
                 std::env::current_dir()
                     .ok()
-                    .map(|d| d.join("skills").join("projects"))
+                    .map(|d| normalize_path(d).join("skills").join("projects"))
             });
 
         if let Some(repository) = repository_root {
+            let repository = normalize_path(repository);
             roots.push(("workspace".into(), repository.join(".agents/skills")));
             roots.push(("workspace".into(), repository.join(".codex/skills")));
         }
@@ -1225,10 +1251,10 @@ impl SkillService {
 
         let mut settings = self.load_settings()?;
         // Reject duplicates.
-        let canonical = path.canonicalize().map_err(io_error)?;
+        let canonical = normalize_path(path.canonicalize().map_err(io_error)?);
         for existing in &settings.local_sources {
             if let Ok(existing_canonical) = PathBuf::from(&existing.path).canonicalize() {
-                if existing_canonical == canonical {
+                if normalize_path(&existing_canonical) == canonical {
                     return Err(RuntimeError::new(
                         "local_source_conflict",
                         "This path is already registered as a local source",
@@ -1326,7 +1352,7 @@ impl SkillService {
                 .unwrap_or_default();
             results.push(SkillSourceLintResult {
                 skill_name,
-                path: dir.to_string_lossy().into_owned(),
+                path: normalize_path(&dir).to_string_lossy().into_owned(),
                 diagnostics,
             });
         }
@@ -1371,7 +1397,7 @@ impl SkillService {
     /// Return read-only diagnostics for the configured global skills directory.
     /// Only returns directory names, paths, and skip reasons; never file contents.
     pub fn global_diagnostics(&self) -> RuntimeResult<GlobalSkillDiagnostics> {
-        let global_dir = self.global_skills_dir.clone();
+        let global_dir = normalize_path(self.global_skills_dir.clone());
         let global_skills_dir = global_dir.to_string_lossy().into_owned();
         if !global_dir.is_dir() {
             return Ok(GlobalSkillDiagnostics {
@@ -1413,7 +1439,7 @@ impl SkillService {
                 .file_name()
                 .map(|v| v.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let dir_path = dir.to_string_lossy().into_owned();
+            let dir_path = normalize_path(&dir).to_string_lossy().into_owned();
 
             if dir_name.starts_with('.') {
                 skipped_subdirectories.push(SkippedSkillDirectory {
@@ -2216,5 +2242,54 @@ mod tests {
         let skipped_names: Vec<_> = diags.skipped_subdirectories.iter().map(|s| s.name.as_str()).collect();
         assert!(skipped_names.contains(&".system_store"));
         assert!(skipped_names.contains(&"empty-skill"));
+    }
+
+    #[test]
+    fn test_resolve_default_global_skills_dir_variations() {
+        let repo_root = Path::new(r"D:\frank\gemini\ChatCmd");
+        let target_release_workdir = Path::new(r"D:\frank\gemini\ChatCmd\target\release");
+        let other_workdir = Path::new(r"C:\some\other\workspace");
+
+        let workdirs: [Option<&Path>; 4] = [
+            Some(repo_root),
+            Some(target_release_workdir),
+            Some(other_workdir),
+            None,
+        ];
+
+        let expected_repo_skills = PathBuf::from(r"D:\frank\gemini\ChatCmd\skills\global");
+
+        // 1. Target release exe
+        let exe_release = Path::new(r"D:\frank\gemini\ChatCmd\target\release\chatcmd.exe");
+        let exe_release_verbatim = Path::new(r"\\?\D:\frank\gemini\ChatCmd\target\release\chatcmd.exe");
+        for &wd in &workdirs {
+            let res = resolve_default_global_skills_dir_from(Some(exe_release), wd);
+            assert_eq!(res, expected_repo_skills, "Failed for release exe with workdir {:?}", wd);
+            let res_v = resolve_default_global_skills_dir_from(Some(exe_release_verbatim), wd);
+            assert_eq!(res_v, expected_repo_skills, "Failed for verbatim release exe with workdir {:?}", wd);
+            assert!(!res.to_string_lossy().starts_with(r"\\?\"));
+            assert!(!res_v.to_string_lossy().starts_with(r"\\?\"));
+        }
+
+        // 2. Target debug exe
+        let exe_debug = Path::new(r"D:\frank\gemini\ChatCmd\target\debug\chatcmd.exe");
+        let exe_debug_verbatim = Path::new(r"\\?\D:\frank\gemini\ChatCmd\target\debug\chatcmd.exe");
+        for &wd in &workdirs {
+            let res = resolve_default_global_skills_dir_from(Some(exe_debug), wd);
+            assert_eq!(res, expected_repo_skills, "Failed for debug exe with workdir {:?}", wd);
+            let res_v = resolve_default_global_skills_dir_from(Some(exe_debug_verbatim), wd);
+            assert_eq!(res_v, expected_repo_skills, "Failed for verbatim debug exe with workdir {:?}", wd);
+            assert!(!res.to_string_lossy().starts_with(r"\\?\"));
+            assert!(!res_v.to_string_lossy().starts_with(r"\\?\"));
+        }
+
+        // 3. Installed exe outside target
+        let exe_installed = Path::new(r"C:\Program Files\ChatCmd\chatcmd.exe");
+        let expected_installed_skills = PathBuf::from(r"C:\Program Files\ChatCmd\skills\global");
+        for &wd in &workdirs {
+            let res = resolve_default_global_skills_dir_from(Some(exe_installed), wd);
+            assert_eq!(res, expected_installed_skills, "Failed for installed exe with workdir {:?}", wd);
+            assert!(!res.to_string_lossy().starts_with(r"\\?\"));
+        }
     }
 }
