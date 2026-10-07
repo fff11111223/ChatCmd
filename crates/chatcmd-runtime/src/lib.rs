@@ -43,7 +43,7 @@ pub use project_context::{
 pub use services::ProcessService;
 pub use shell::ShellRuntime;
 pub use skill_service::{
-    GlobalSkillDiagnostics, LintSeverity, LocalSkillSource, ManagedSkill, ResidentPreview,
+    normalize_path, GlobalSkillDiagnostics, LintSeverity, LocalSkillSource, ManagedSkill, ResidentPreview,
     ResidentUsage, SkillInstallCandidate, SkillInstallPreview, SkillLintDiagnostic, SkillOption,
     SkillOptionChoice, SkillService, SkillSourceLintResult, SkillSourceType, SkippedSkillDirectory,
 };
