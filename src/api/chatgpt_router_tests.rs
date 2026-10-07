@@ -314,6 +314,52 @@ async fn gui_session_and_local_client_marker_remain_required() {
 }
 
 #[tokio::test]
+async fn reload_all_skills_enforces_auth_and_denies_extension_caller() {
+    let (state, app, _directory) = fixture("completed").await;
+    let path = "/api/local/skills/reload-all";
+    let unauthenticated = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("X-ChatCmdClient", "local-ui")
+        .body(Body::empty())
+        .expect("request");
+    assert_eq!(
+        app.clone()
+            .oneshot(unauthenticated)
+            .await
+            .expect("response")
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        extension_request(&app, "POST", path, json!({}))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let token = state
+        .gui_auth
+        .setup_password("reload-test-password".to_owned())
+        .await
+        .expect("setup password");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("X-ChatCmdClient", "local-ui")
+                .header("Cookie", format!("chatcmd_gui_session={token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let body = expect_json(response, StatusCode::OK).await;
+    assert!(body["skillCount"].is_number());
+}
+
+#[tokio::test]
 async fn skills_diagnostics_enforces_auth_and_denies_extension_caller() {
     let (state, app, _directory) = fixture("completed").await;
     let path = "/api/local/skills/diagnostics";

@@ -1309,6 +1309,12 @@ impl SkillService {
         Ok(true)
     }
 
+    /// Evict every task snapshot and rediscover skills from disk.
+    pub async fn reload_all(&self) -> RuntimeResult<usize> {
+        self.task_snapshots.write().await.clear();
+        Ok(self.list_global().await?.len())
+    }
+
     /// Run lint on every skill directory inside a registered local source.
     /// Returns diagnostics grouped by skill name.
     pub fn lint_local_source(
@@ -2242,6 +2248,22 @@ mod tests {
         let skipped_names: Vec<_> = diags.skipped_subdirectories.iter().map(|s| s.name.as_str()).collect();
         assert!(skipped_names.contains(&".system_store"));
         assert!(skipped_names.contains(&"empty-skill"));
+    }
+
+    #[tokio::test]
+    async fn reload_all_evicts_task_snapshots_and_rediscovers_skills() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let global = temp.path().join("skills/global");
+        let skill = global.join("reloadable");
+        fs::create_dir_all(&skill).expect("create skill");
+        let core = skill.join("core.md");
+        fs::write(&core, "---\nname: reloadable\ndescription: Reload test\n---\nold").expect("write old");
+        let service = SkillService::new(None, None, Some(&global), 10_000);
+        assert!(service.read_for_task(Some("task"), "reloadable", None, None, None).await.expect("read old").instructions.contains("old"));
+        fs::write(&core, "---\nname: reloadable\ndescription: Reload test\n---\nnew").expect("write new");
+        assert!(service.read_for_task(Some("task"), "reloadable", None, None, None).await.expect("cached read").instructions.contains("old"));
+        assert_eq!(service.reload_all().await.expect("reload"), 1);
+        assert!(service.read_for_task(Some("task"), "reloadable", None, None, None).await.expect("read new").instructions.contains("new"));
     }
 
     #[test]

@@ -140,6 +140,7 @@ export const api = {
   session: (id: string, cursor?: string) => request<SessionDetail>(`/api/local/sessions/${item(id)}${cursor ? `?cursor=${item(cursor)}` : ''}`),
   sessionAction: (id: string, action: string, body?: unknown) => request<SessionDetail>(`/api/local/sessions/${item(id)}/${action}`, { method: 'POST', body: body === undefined ? undefined : json(body) }),
   skills: () => request<UserSkill[]>('/api/local/skills'),
+  reloadAllSkills: () => request<{ skillCount: number }>('/api/local/skills/reload-all', { method: 'POST' }),
   skill: (id: string) => request<Skill>(`/api/local/skills/${item(id)}`),
   setSkillEnabled: (id: string, isEnabled: boolean) => request<UserSkill>(`/api/local/skills/${item(id)}/enabled`, { method: 'PATCH', body: json({ isEnabled }) }),
   updateSkillOptions: (id: string, options: Record<string, SkillOptionValue>) => request<UserSkill>(`/api/local/skills/${item(id)}/options`, { method: 'PATCH', body: json({ options }) }),

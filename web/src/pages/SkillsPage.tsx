@@ -48,7 +48,9 @@ export function SkillsPage() {
 
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState<string>();
+  const [previewVersion, setPreviewVersion] = useState(0);
 
   // Modals
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -175,6 +177,22 @@ export function SkillsPage() {
     }
   }
 
+  async function reloadAllSkills() {
+    setBusy('reload-all');
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const { skillCount } = await api.reloadAllSkills();
+      setPreviewVersion((version) => version + 1);
+      await load();
+      setNotice(tr('Reloaded {count} skills from disk.', { count: skillCount }));
+    } catch (reason) {
+      setError(message(reason, tr('Could not reload all skills.')));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function reloadSource(source: LocalSkillSource) {
     setBusy(`reload:${source.id}`);
     setError(undefined);
@@ -261,9 +279,15 @@ export function SkillsPage() {
             <h1>{tr('Your skills')}</h1>
             <p>{tr('Manage global and project skills that Agents can choose while handling tasks.')}</p>
           </div>
-          <button className="button primary skills-add" onClick={() => setAddModalOpen(true)}>
-            <Plus /> {tr('Add skill')}
-          </button>
+          <div style={{ display: 'grid', gap: '4px', justifyItems: 'end' }}>
+            <button className="button secondary" disabled={busy !== undefined} onClick={() => void reloadAllSkills()}>
+              {busy === 'reload-all' ? <LoaderCircle className="spin" /> : <RefreshCw />} {tr('Reload all Skills')}
+            </button>
+            <small style={{ color: 'var(--muted)' }}>{tr('Running tasks use the new content on their next call.')}</small>
+            <button className="button primary skills-add" disabled={busy !== undefined} onClick={() => setAddModalOpen(true)}>
+              <Plus /> {tr('Add skill')}
+            </button>
+          </div>
         </div>
 
         {loadState === 'ready' && (
@@ -380,6 +404,8 @@ export function SkillsPage() {
           </button>
         </div>
       )}
+
+      {notice && <div className="skills-success" role="status"><Check /><span>{notice}</span><button className="plain-icon" aria-label={tr('Close notification')} onClick={() => setNotice(undefined)}><X /></button></div>}
 
       {/* Read-only Global Diagnostics section */}
       {showDiagnostics && diagnostics && (
@@ -765,7 +791,7 @@ export function SkillsPage() {
 
       {/* Resident Model Preview Modal */}
       {previewModalOpen && (
-        <ResidentPreviewModal onClose={() => setPreviewModalOpen(false)} />
+        <ResidentPreviewModal key={previewVersion} onClose={() => setPreviewModalOpen(false)} />
       )}
 
       {/* Options Modal */}

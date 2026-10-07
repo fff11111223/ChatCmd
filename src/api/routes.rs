@@ -166,6 +166,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/skills", get(skills))
         .route("/skills/preview", post(preview_skills))
         .route("/skills/install", post(install_skill))
+        .route("/skills/reload-all", post(reload_all_skills))
         .route("/skills/sources", get(list_local_sources).post(add_local_source))
         .route(
             "/skills/sources/{source_id}",

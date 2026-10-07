@@ -241,6 +241,14 @@ pub(super) async fn skill_icon(
 
 // ── Local source management endpoints ────────────────────────────────────
 
+/// POST /skills/reload-all — evict every task snapshot and rediscover skills.
+pub(super) async fn reload_all_skills(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, Problem> {
+    let skill_count = state.skills.reload_all().await.map_err(runtime_problem)?;
+    Ok(Json(json!({ "skillCount": skill_count })))
+}
+
 /// GET /skills/sources — list registered local folder sources.
 pub(super) async fn list_local_sources(
     State(state): State<Arc<AppState>>,
