@@ -15,7 +15,7 @@
 
 ## 2. 呼叫格式
 
-- 每個呼叫放在標示為 `chatcmd_tool_call` 的程式碼區塊裡，內容是一個合法的 JSON：
+- 每個呼叫前必須先換行，再放置標示為 `chatcmd_tool_call` 的程式碼區塊；區塊內容是一個合法的 JSON：
   `{"id":"call_001","tool":"<工具名稱>","arguments":{...}}`
 - `id` 寫在 JSON 裡面，格式 `call_001`、`call_002`…，每次加 1，不重複、不跳號。
   失敗的呼叫也用掉一個編號。若回覆結尾有 `next_id`，就用它。
@@ -86,7 +86,20 @@
 | `skills_list` | 列出可用的 Skill |
 | `skill_read` | 讀 Skill。參數 `skillId`、`tier`（`core` 或 `examples`，不填是 `core`）、`tool`。注意是 `skillId`，不是 `skill_id` |
 | `device_list`、`device_get` | 執行裝置的資訊 |
-| `task_*`、`agent_*` | 任務與代理流程，依系統指示使用 |
+| `task_get` | 讀取目前任務狀態 |
+| `task_list` | 列出任務 |
+| `task_set_execution_mode` | 設定任務執行模式 |
+| `task_artifact_list` | 列出目前任務的產物 |
+| `task_artifact_create` | 建立任務產物 |
+| `task_artifact_read` | 讀取任務產物 |
+| `agent_user_message` | 發送 Agent 回合中的使用者訊息 |
+| `agent_progress` | 回報目前進度 |
+| `agent_plan_question` | 在需要使用者選擇方案或確認執行時提問 |
+| `agent_subagent_start` | 委派工作給子 Agent |
+| `agent_subagent_wait` | 等待或讀取子 Agent 結果 |
+| `agent_turn_complete` | 完成 Agent 回合 |
+
+`task_*` 與 `agent_*` 是可選的高階任務與代理流程工具，不是所有任務都必須使用。一般工具操作可直接使用對應工具；只有需要任務狀態、Agent 回合控制、進度回報、使用者確認或將可獨立工作的內容委派給子 Agent 時，才使用相應的 `task_*` 或 `agent_*` 工具。詳細參數與呼叫方式以各工具的 `examples/<tool>.md` 為準。
 
 ## 5. 出錯時怎麼辦
 
@@ -114,7 +127,3 @@
 - 約 20 次呼叫還沒有進展，就停下來，整理已知的事與卡住的原因。
 - 每次呼叫前，用一行文字寫出目標與目前進度，寫在呼叫之外，不要放進 JSON。
 - 最後回報：做了什麼、哪些證據顯示成功、還有什麼沒做。
-
-
-
-## 8. examples大部分目前還未完成，待補充
