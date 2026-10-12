@@ -49,8 +49,9 @@ use chatcmd_runtime::{
 use chatcmd_storage::{PersistedWorkspaceIndex, PersistedWorkspaceIndexEntry, SqliteRepository};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use sqlx::Row as _;
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -395,6 +396,61 @@ impl RuntimeHost {
         event.session_id = session_id;
         event.turn_id = turn_id;
         let _ = self.events.send(event);
+    }
+
+    pub(crate) async fn task_project_folders(
+        &self,
+        task_id: Option<&str>,
+    ) -> RuntimeResult<Vec<PathBuf>> {
+        let Some(task_id) = task_id.filter(|value| !value.trim().is_empty()) else {
+            return Ok(Vec::new());
+        };
+        let id = TaskId::new(task_id).map_err(|error| invalid("taskId", error))?;
+        let task = self.repository.task(&id).await.map_err(storage_error)?;
+        let Some(folder) = task
+            .and_then(|value| value.project_folder)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(Vec::new());
+        };
+
+        let canon = crate::api::workspaces::canonical_project_path(&folder);
+        let rows = sqlx::query("SELECT path, canonical_path, paths FROM workspace_projects")
+            .fetch_all(self.repository.pool())
+            .await
+            .unwrap_or_default();
+
+        for row in rows {
+            let primary_canon = row.get::<String, _>("canonical_path");
+            let paths: Vec<String> = row
+                .try_get::<Option<String>, _>("paths")
+                .ok()
+                .flatten()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_else(|| vec![row.get::<String, _>("path")]);
+
+            let matches = primary_canon == canon
+                || paths
+                    .iter()
+                    .any(|p| crate::api::workspaces::canonical_project_path(p) == canon);
+
+            if matches {
+                let mut result = Vec::new();
+                for p in paths {
+                    let pb = PathBuf::from(p);
+                    if !result.contains(&pb) {
+                        result.push(pb);
+                    }
+                }
+                let task_pb = PathBuf::from(&folder);
+                if !result.contains(&task_pb) {
+                    result.push(task_pb);
+                }
+                return Ok(result);
+            }
+        }
+
+        Ok(vec![PathBuf::from(folder)])
     }
 }
 

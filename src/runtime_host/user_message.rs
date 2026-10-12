@@ -276,13 +276,14 @@ impl RuntimeHost {
                 payload,
             );
         }
-        let project_folder = self
-            .repository
-            .task(&task_id)
-            .await
-            .map_err(storage_error)?
-            .and_then(|task| task.project_folder)
-            .filter(|folder| !folder.trim().is_empty());
+        let project_folders = self.task_project_folders(Some(task_id.as_str())).await.unwrap_or_default();
+        let project_folder = project_folders
+            .first()
+            .map(|p| p.to_string_lossy().into_owned());
+        let project_folders_strings: Vec<String> = project_folders
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         let project_context = if let Some(folder) = project_folder.as_deref() {
             match ProjectContextService::default().load(folder, &[]).await {
                 Ok(bundle) => json!({
@@ -335,6 +336,7 @@ impl RuntimeHost {
             "suggestedTitleRequired": is_first_message,
             "provisionalTitle": is_first_message.then_some(provisional_title),
             "projectFolder": project_folder,
+            "projectFolders": project_folders_strings,
             "projectContext": project_context,
             "taskId": task_id.as_str(),
             "turnId": turn_id.as_str(),

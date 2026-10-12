@@ -70,7 +70,7 @@ impl RuntimeHost {
         tool: &str,
         _context: &OperationContext,
         arguments: &Value,
-        project_folder: Option<&Path>,
+        project_folders: &[PathBuf],
     ) -> RuntimeResult<()> {
         let settings = self.load_safety_settings().await;
 
@@ -94,14 +94,14 @@ impl RuntimeHost {
         if settings.enforce_project_folder_only {
             // Tools subject to the sandbox: filesystem ops, shell/command execution, and git.
             // All of these accept path arguments (path, source, destination, cwd, paths[],
-            // requests[]) that are checked by check_path_within_project().
+            // requests[]) that are checked by check_path_within_projects().
             let is_sandboxed_tool = is_filesystem_tool_name(tool)
                 || matches!(tool, "command_run" | "shell_create")
                 || tool.starts_with("git_");
-            if let Some(folder) = project_folder {
+            if !project_folders.is_empty() {
                 if is_sandboxed_tool {
-                    // project_folder is known — verify every path argument is inside it
-                    check_path_within_project(arguments, folder)?;
+                    // project_folders is known — verify every path argument is inside at least one folder
+                    check_path_within_projects(arguments, project_folders)?;
                 }
             } else if is_sandboxed_tool {
                 // No project_folder is set for this conversation (Unclassified).
@@ -211,31 +211,34 @@ impl RuntimeHost {
                 }
             }
 
-            // F. Sandbox: scan command text for absolute paths outside project_folder.
+            // F. Sandbox: scan command text for absolute paths outside project_folders.
             // This blocks shell_write commands like `type C:\Users\frank\secret.txt` or
             // `Get-Content D:\other_project\config.json` that would access files outside
             // the sandbox even when the shell's cwd is inside the project.
-            if settings.enforce_project_folder_only {
-                if let Some(folder) = project_folder {
-                    let canonical_project = strip_verbatim_prefix(
-                        &folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf()),
-                    );
-                    // Tokenise the command text and check every token that looks like an absolute path.
-                    for token in cmd_text.split_whitespace() {
-                        // Strip surrounding quotes if present.
-                        let token = token.trim_matches(|c| c == '"' || c == '\'');
-                        if looks_like_absolute_path(token) {
-                            let p = std::path::Path::new(token);
-                            if validate_path_within_project(p, &canonical_project).is_err() {
-                                return Err(RuntimeError::new(
-                                    "policy_denied",
-                                    format!(
-                                        "指令包含超出限制專案目錄範圍的路徑：{token} (限定於 {})\
-                                        \nThe command references a path outside the allowed project directory.",
-                                        canonical_project.display()
-                                    ),
-                                ));
-                            }
+            if settings.enforce_project_folder_only && !project_folders.is_empty() {
+                let canonical_projects: Vec<PathBuf> = project_folders
+                    .iter()
+                    .map(|f| strip_verbatim_prefix(&f.canonicalize().unwrap_or_else(|_| f.clone())))
+                    .collect();
+                // Tokenise the command text and check every token that looks like an absolute path.
+                for token in cmd_text.split_whitespace() {
+                    // Strip surrounding quotes if present.
+                    let token = token.trim_matches(|c| c == '"' || c == '\'');
+                    if looks_like_absolute_path(token) {
+                        let p = std::path::Path::new(token);
+                        if validate_path_within_projects(p, &canonical_projects).is_err() {
+                            let allowed_display: Vec<String> = canonical_projects
+                                .iter()
+                                .map(|cp| cp.display().to_string())
+                                .collect();
+                            return Err(RuntimeError::new(
+                                "policy_denied",
+                                format!(
+                                    "指令包含超出限制專案目錄範圍的路徑：{token} (限定於 {})\
+                                    \nThe command references a path outside the allowed project directory.",
+                                    allowed_display.join(", ")
+                                ),
+                            ));
                         }
                     }
                 }
@@ -301,21 +304,21 @@ fn extract_command_strings(tool: &str, arguments: &Value) -> Vec<String> {
     result
 }
 
-fn check_path_within_project(arguments: &Value, project_folder: &Path) -> RuntimeResult<()> {
-    let canonical_project = strip_verbatim_prefix(
-        &project_folder
-            .canonicalize()
-            .unwrap_or_else(|_| project_folder.to_path_buf()),
-    );
+fn check_path_within_projects(arguments: &Value, project_folders: &[PathBuf]) -> RuntimeResult<()> {
+    let canonical_projects: Vec<PathBuf> = project_folders
+        .iter()
+        .map(|f| strip_verbatim_prefix(&f.canonicalize().unwrap_or_else(|_| f.clone())))
+        .collect();
 
+    let primary = &project_folders[0];
     let check_path = |path_str: &str| -> RuntimeResult<()> {
         let p = Path::new(path_str);
         let abs_path = if looks_like_absolute_path(path_str) || p.is_absolute() {
             p.to_path_buf()
         } else {
-            project_folder.join(p)
+            primary.join(p)
         };
-        validate_path_within_project(&abs_path, &canonical_project)?;
+        validate_path_within_projects(&abs_path, &canonical_projects)?;
         Ok(())
     };
 
@@ -394,7 +397,7 @@ fn looks_like_absolute_path(s: &str) -> bool {
 }
 
 /// Strips Windows extended-length prefix (`\\?\` or `//?/`) from a path.
-fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(stripped) = s.strip_prefix(r"\\?\") {
         PathBuf::from(stripped)
@@ -460,7 +463,7 @@ fn has_alternate_data_stream(s: &str) -> bool {
 
 /// Checks whether `target` is within `base` (or equal to `base`) by comparing path components.
 /// On Windows, component names are compared case-insensitively.
-fn is_subpath(target: &Path, base: &Path) -> bool {
+pub(crate) fn is_subpath(target: &Path, base: &Path) -> bool {
     let mut target_comps = target
         .components()
         .filter(|c| !matches!(c, std::path::Component::CurDir));
@@ -594,16 +597,22 @@ fn resolve_target_canonical(target_path: &Path) -> RuntimeResult<PathBuf> {
     Ok(resolved)
 }
 
-/// Validates that `target` is within `canonical_project`.
-fn validate_path_within_project(target: &Path, canonical_project: &Path) -> RuntimeResult<()> {
+/// Validates that `target` is within at least one of `canonical_projects`.
+fn validate_path_within_projects(target: &Path, canonical_projects: &[PathBuf]) -> RuntimeResult<()> {
     let raw_str = target.to_string_lossy();
+    let display_str = canonical_projects
+        .iter()
+        .map(|cp| cp.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
     if is_unc_or_device_path(&raw_str) {
         return Err(RuntimeError::new(
             "policy_denied",
             format!(
                 "路徑存取超出限制專案目錄範圍：{} (限定於 {})",
                 target.display(),
-                canonical_project.display()
+                display_str
             ),
         ));
     }
@@ -613,20 +622,24 @@ fn validate_path_within_project(target: &Path, canonical_project: &Path) -> Runt
             format!(
                 "路徑存取超出限制專案目錄範圍：{} (限定於 {})",
                 target.display(),
-                canonical_project.display()
+                display_str
             ),
         ));
     }
 
     let resolved_target = resolve_target_canonical(target)?;
 
-    if !is_subpath(&resolved_target, canonical_project) {
+    let is_inside_any = canonical_projects
+        .iter()
+        .any(|canonical_project| is_subpath(&resolved_target, canonical_project));
+
+    if !is_inside_any {
         return Err(RuntimeError::new(
             "policy_denied",
             format!(
                 "路徑存取超出限制專案目錄範圍：{} (限定於 {})",
                 target.display(),
-                canonical_project.display()
+                display_str
             ),
         ));
     }
@@ -755,14 +768,44 @@ mod tests {
             "path": new_file.to_string_lossy().to_string(),
             "content": "example content"
         });
-        assert!(check_path_within_project(&args, &project_dir).is_ok());
+        assert!(check_path_within_projects(&args, &[project_dir.clone()]).is_ok());
 
         // Sibling folder ChatCmd2 rejected
         let sibling_file = temp.path().join("ChatCmd2").join("secret.txt");
         let args_sibling = serde_json::json!({
             "path": sibling_file.to_string_lossy().to_string(),
         });
-        assert!(check_path_within_project(&args_sibling, &project_dir).is_err());
+        assert!(check_path_within_projects(&args_sibling, &[project_dir]).is_err());
+    }
+
+    #[test]
+    fn test_check_paths_within_multiple_projects() {
+        let temp = tempdir().expect("tempdir");
+        let project_dir1 = temp.path().join("ChatCmd1");
+        let project_dir2 = temp.path().join("ChatCmd2");
+        let outside_dir = temp.path().join("ChatCmdOutside");
+        fs::create_dir_all(&project_dir1).expect("create dir1");
+        fs::create_dir_all(&project_dir2).expect("create dir2");
+        fs::create_dir_all(&outside_dir).expect("create outside");
+
+        let file1 = project_dir1.join("file1.txt");
+        let file2 = project_dir2.join("file2.txt");
+        let outside_file = outside_dir.join("secret.txt");
+        fs::write(&file1, "content1").expect("write file1");
+        fs::write(&file2, "content2").expect("write file2");
+        fs::write(&outside_file, "secret").expect("write outside");
+
+        let folders = vec![project_dir1.clone(), project_dir2.clone()];
+
+        // Both folder 1 and folder 2 files are allowed
+        let args1 = serde_json::json!({ "path": file1.to_string_lossy().to_string() });
+        let args2 = serde_json::json!({ "path": file2.to_string_lossy().to_string() });
+        assert!(check_path_within_projects(&args1, &folders).is_ok());
+        assert!(check_path_within_projects(&args2, &folders).is_ok());
+
+        // File outside both folders is rejected
+        let args_outside = serde_json::json!({ "path": outside_file.to_string_lossy().to_string() });
+        assert!(check_path_within_projects(&args_outside, &folders).is_err());
     }
 }
 

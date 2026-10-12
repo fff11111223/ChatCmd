@@ -1,4 +1,4 @@
-import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, Search, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, Search, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEventHandler } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
@@ -83,7 +83,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
   const [visibleGroupCounts, setVisibleGroupCounts] = useState<Record<string, number>>({});
   const [projectHasMore, setProjectHasMore] = useState<Record<string, boolean>>({});
   const [loadingProjectMore, setLoadingProjectMore] = useState<Record<string, boolean>>({});
-  const [projectModalOpen, setProjectModalOpen] = useState(false); const [editingProject, setEditingProject] = useState<WorkspaceProject>(); const [projectName, setProjectName] = useState(''); const [projectPath, setProjectPath] = useState(''); const [projectChatGptUrl, setProjectChatGptUrl] = useState(''); const [projectFolderPicking, setProjectFolderPicking] = useState(false); const [projectSaving, setProjectSaving] = useState(false); const [projectError, setProjectError] = useState('');
+  const [projectModalOpen, setProjectModalOpen] = useState(false); const [editingProject, setEditingProject] = useState<WorkspaceProject>(); const [projectName, setProjectName] = useState(''); const [projectPaths, setProjectPaths] = useState<string[]>(['']); const [projectChatGptUrl, setProjectChatGptUrl] = useState(''); const [projectFolderPicking, setProjectFolderPicking] = useState(false); const [projectSaving, setProjectSaving] = useState(false); const [projectError, setProjectError] = useState('');
   const [projectContextMenu, setProjectContextMenu] = useState<{ project: WorkspaceProject; x: number; y: number }>(); const [deleteProjectTarget, setDeleteProjectTarget] = useState<WorkspaceProject>(); const [deletingProject, setDeletingProject] = useState(false); const [deleteProjectError, setDeleteProjectError] = useState('');
   const visibleTaskIds = useRef(new Set<string>()); const loadingMoreRef = useRef(false); const groupExpansionInitialized = useRef(false); const hadStoredReadCounts = useRef(typeof localStorage !== 'undefined' && localStorage.getItem(READ_FINAL_COUNTS_KEY) !== null);
   const railResize = useResizableWidth({ storageKey: 'chatcmd.layout.taskRailWidth.v1', cssVariable: '--task-rail-width', defaultWidth: typeof window !== 'undefined' && window.innerWidth <= 1180 ? 270 : 284, minWidth: 240, maxWidth: 480 });
@@ -159,22 +159,55 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
     try { await api.reorderWorkspaceProjects(next.map((project) => project.id)); }
     catch (value) { setProjects(previous); setError(value instanceof Error ? value.message : tr('Could not save project order.')); }
   };
-  const startTask = (project?: WorkspaceProject) => navigate('/tasks/new', { state: project ? { projectFolder: project.path, projectName: project.name, chatGptProjectUrl: project.chatGptProjectUrl ?? undefined } : undefined });
-  const openProjectModal = (project?: WorkspaceProject) => { setEditingProject(project); setProjectName(project?.name ?? ''); setProjectPath(project?.path ?? ''); setProjectChatGptUrl(project?.chatGptProjectUrl ?? ''); setProjectError(''); setProjectModalOpen(true); };
-  const pickProjectFolder = async () => {
+  const startTask = (project?: WorkspaceProject) => navigate('/tasks/new', { state: project ? { projectFolder: project.path, projectFolders: project.paths?.length ? project.paths : [project.path], projectName: project.name, chatGptProjectUrl: project.chatGptProjectUrl ?? undefined } : undefined });
+  const openProjectModal = (project?: WorkspaceProject) => {
+    setEditingProject(project);
+    setProjectName(project?.name ?? '');
+    const initialPaths = project?.paths && project.paths.length > 0 ? project.paths : (project?.path ? [project.path] : ['']);
+    setProjectPaths(initialPaths);
+    setProjectChatGptUrl(project?.chatGptProjectUrl ?? '');
+    setProjectError('');
+    setProjectModalOpen(true);
+  };
+  const pickProjectFolder = async (index?: number) => {
     if (projectFolderPicking) return;
-    setProjectFolderPicking(true); setProjectError('');
-    try { const result = await api.pickProjectFolder(); if (result.path) setProjectPath(result.path); }
-    catch (reason) { setProjectError(reason instanceof Error ? reason.message : tr('Could not open the folder picker.')); }
-    finally { setProjectFolderPicking(false); }
+    setProjectFolderPicking(true);
+    setProjectError('');
+    try {
+      const result = await api.pickProjectFolder();
+      if (result.path) {
+        const selected = result.path;
+        setProjectPaths((current) => {
+          if (index !== undefined) {
+            const next = [...current];
+            next[index] = selected;
+            return next;
+          }
+          if (current.length === 1 && !current[0]) return [selected];
+          if (current.includes(selected)) return current;
+          return [...current, selected];
+        });
+      }
+    } catch (reason) {
+      setProjectError(reason instanceof Error ? reason.message : tr('Could not open the folder picker.'));
+    } finally {
+      setProjectFolderPicking(false);
+    }
+  };
+  const removeProjectFolder = (index: number) => {
+    setProjectPaths((current) => {
+      if (current.length <= 1) return [''];
+      return current.filter((_, i) => i !== index);
+    });
   };
   const saveProject = async () => {
-    if (!projectName.trim() || !projectPath.trim()) { setProjectError(tr('Enter a name and choose a project folder.')); return; }
+    const validPaths = projectPaths.map((p) => p.trim()).filter(Boolean);
+    if (!projectName.trim() || validPaths.length === 0) { setProjectError(tr('Enter a name and choose a project folder.')); return; }
     const chatGptProjectUrl = projectChatGptUrl.trim();
     if (chatGptProjectUrl && !isValidChatGptProjectUrl(chatGptProjectUrl)) { setProjectError(tr('The ChatGPT project link must match https://chatgpt.com/g/g-p-{CODE}/project.')); return; }
     setProjectSaving(true); setProjectError('');
     try {
-      const input = { name: projectName.trim(), path: projectPath.trim(), chatGptProjectUrl };
+      const input = { name: projectName.trim(), path: validPaths[0], paths: validPaths, chatGptProjectUrl };
       if (editingProject) await api.updateWorkspaceProject(editingProject.id, input); else await api.saveWorkspaceProject(input);
       setProjects(await api.workspaceProjects()); setProjectModalOpen(false); setEditingProject(undefined);
     }
@@ -218,7 +251,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
     const handleDragOver = project ? (event: ReactDragEvent<HTMLElement>) => { event.preventDefault(); if (!draggedProjectId || draggedProjectId === project.id) return; event.dataTransfer.dropEffect = 'move'; setDragOverProjectId(project.id); } : undefined;
     const handleDrop = project ? (event: ReactDragEvent<HTMLElement>) => { event.preventDefault(); const sourceId = draggedProjectId || event.dataTransfer.getData('text/plain'); setDraggedProjectId(undefined); setDragOverProjectId(undefined); if (sourceId) void reorderProjects(sourceId, project.id); } : undefined;
     return <section className={`task-project-group ${expanded ? 'expanded' : 'collapsed'}${dragClass}`} key={key} onDragOver={handleDragOver} onDrop={handleDrop} onContextMenu={project ? (event) => { event.preventDefault(); setContextMenu(undefined); setProjectContextMenu({ project, x: Math.min(event.clientX, window.innerWidth - 236), y: Math.min(event.clientY, window.innerHeight - 112) }); } : undefined}>
-      <header className="task-project-heading"><button className="task-project-toggle" type="button" onClick={toggleExpanded} aria-expanded={expanded} aria-label={tr(expanded ? 'Hide conversations for {name}' : 'Show conversations for {name}', { name })}><ChevronDown /><span className={project ? 'task-project-title-drag-handle' : undefined} draggable={Boolean(project)} title={project ? tr('Drag to reorder {name}', { name }) : undefined} onDragStart={project ? (event) => { setDraggedProjectId(project.id); setDragOverProjectId(undefined); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', project.id); } : undefined} onDragEnd={project ? () => { setDraggedProjectId(undefined); setDragOverProjectId(undefined); } : undefined}><strong title={project?.path}>{name}</strong>{project && <small title={project.path}>{project.path}</small>}</span></button><button className="task-project-add" type="button" onClick={() => startTask(project)} aria-label={tr('Create conversation in {name}', { name })} title={tr('Create conversation in {name}', { name })}><Plus /></button></header>
+      <header className="task-project-heading"><button className="task-project-toggle" type="button" onClick={toggleExpanded} aria-expanded={expanded} aria-label={tr(expanded ? 'Hide conversations for {name}' : 'Show conversations for {name}', { name })}><ChevronDown /><span className={project ? 'task-project-title-drag-handle' : undefined} draggable={Boolean(project)} title={project ? tr('Drag to reorder {name}', { name }) : undefined} onDragStart={project ? (event) => { setDraggedProjectId(project.id); setDragOverProjectId(undefined); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', project.id); } : undefined} onDragEnd={project ? () => { setDraggedProjectId(undefined); setDragOverProjectId(undefined); } : undefined}><strong title={project ? (project.paths?.join('\n') || project.path) : undefined}>{name}</strong>{project && <small title={project.paths?.join('\n') || project.path}>{project.path}{project.paths && project.paths.length > 1 ? ` (+${project.paths.length - 1})` : ''}</small>}</span></button><button className="task-project-add" type="button" onClick={() => startTask(project)} aria-label={tr('Create conversation in {name}', { name })} title={tr('Create conversation in {name}', { name })}><Plus /></button></header>
       {expanded && <><div className="task-project-conversations">{visible.length ? visible.map(renderRow) : <p className="task-project-empty">{tr('No conversations in this group')}</p>}</div>
       {(canShowMore || visibleCount > COLLAPSED_PROJECT_TASKS) && <div className="task-project-more-actions">{canShowMore && <button className="task-project-more" type="button" disabled={Boolean(loadingProjectMore[key])} onClick={() => project ? void loadMoreProject(key, project, visible) : setVisibleGroupCounts((current) => ({ ...current, [key]: visibleCount + COLLAPSED_PROJECT_TASKS }))}>{loadingProjectMore[key] ? <LoaderCircle className="spin" /> : <ChevronDown />}{tr('Show more')}</button>}{visibleCount > COLLAPSED_PROJECT_TASKS && <><span aria-hidden="true">|</span><button className="task-project-more" type="button" onClick={() => setVisibleGroupCounts((current) => ({ ...current, [key]: COLLAPSED_PROJECT_TASKS }))}><ChevronUp />{tr('Show less')}</button></>}</div>}</>}
     </section>;
@@ -253,7 +286,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
             try { const result = await api.setTaskProjectFolder(contextMenu.task.id, project.path); setLoadedTasks((current) => current.map((t) => t.id === result.task.id ? { ...t, ...result.task } : t)); setContextMenu(undefined); setShowMoveMenu(false); }
             catch (value) { setMoveError(value instanceof Error ? value.message : tr('Could not move conversation.')); }
             finally { setMovingToProject(false); }
-          }}><span>{project.name}</span><small>{project.path}</small></button>
+          }}><span>{project.name}</span><small>{project.path}{project.paths && project.paths.length > 1 ? ` (+${project.paths.length - 1})` : ''}</small></button>
         ))}
         <button type="button" role="menuitem" disabled={movingToProject} onClick={async () => {
           setMovingToProject(true); setMoveError('');
@@ -270,7 +303,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
     {projectContextMenu && <div className="task-context-menu" role="menu" style={{ left: projectContextMenu.x, top: projectContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { const project = projectContextMenu.project; setProjectContextMenu(undefined); openProjectModal(project); }}><Pencil /><span>{tr('Edit project')}</span></button><button type="button" role="menuitem" className="danger" onClick={() => { setDeleteProjectError(''); setDeleteProjectTarget(projectContextMenu.project); setProjectContextMenu(undefined); }}><Trash2 /><span>{tr('Delete project')}</span></button></div>}
     {deleteTarget && <Modal title={tr('Delete conversation?')} description={conversationName(deleteTarget)} close={() => !deleting && setDeleteTarget(undefined)} dangerous><div className="task-delete-warning"><AlertTriangle /><div><strong>{tr('Warning')}</strong><p>{tr('Deleting removes this conversation and its linked data from the list. This conversation may not work again in the future.')}</p></div></div>{deleteError && <p className="task-delete-error" role="alert">{deleteError}</p>}<div className="modal-actions"><button className="button secondary" type="button" disabled={deleting} onClick={() => setDeleteTarget(undefined)}>{tr('Cancel')}</button><button className="button danger" type="button" disabled={deleting} onClick={() => void deleteConversation()}>{deleting ? tr('Deleting…') : tr('Delete conversation')}</button></div></Modal>}
     {deleteProjectTarget && <Modal title={tr('Delete project?')} description={deleteProjectTarget.name} close={() => !deletingProject && setDeleteProjectTarget(undefined)} dangerous><div className="task-delete-warning"><AlertTriangle /><div><strong>{tr('The entire project will be deleted')}</strong><p>{tr('Completed conversations in this project will also be deleted. Unfinished conversations will be kept and moved to “Unclassified”.')}</p></div></div>{deleteProjectError && <p className="task-delete-error" role="alert">{deleteProjectError}</p>}<div className="modal-actions"><button className="button secondary" type="button" disabled={deletingProject} onClick={() => setDeleteProjectTarget(undefined)}>{tr('Cancel')}</button><button className="button danger" type="button" disabled={deletingProject} onClick={() => void deleteProject()}>{deletingProject ? tr('Deleting…') : tr('Delete project')}</button></div></Modal>}
-    {projectModalOpen && <Modal className="workspace-project-modal" title={tr(editingProject ? 'Edit project' : 'Add project')} description={tr(editingProject ? 'Update the display name or root folder of the project.' : 'Save a display name and root folder to group conversations by project.')} close={() => { if (!projectFolderPicking && !projectSaving) { setProjectModalOpen(false); setEditingProject(undefined); } }}><div className="workspace-project-form"><label><span>{tr('Name')}</span><input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={tr('Example: Dotty')} autoFocus maxLength={160} disabled={projectSaving} /></label><label><span>{tr('Project folder')}</span><button className={`workspace-project-folder ${projectPath ? '' : 'empty'}`} type="button" onClick={() => void pickProjectFolder()} disabled={projectFolderPicking || projectSaving}>{projectFolderPicking ? <LoaderCircle className="spin" /> : <FolderOpen />}<span>{projectPath || tr('Choose folder')}</span></button></label><label><span>{tr('Project link (for ChatGPT)')}</span><div className="workspace-project-link-row"><input value={projectChatGptUrl} onChange={(event) => setProjectChatGptUrl(event.target.value)} placeholder="https://chatgpt.com/g/g-p-{CODE}/project" disabled={projectSaving} /><a className="workspace-project-open-link" href="https://chatgpt.com/projects" target="_blank" rel="noreferrer" aria-label={tr('Open ChatGPT Projects in a new tab')} title={tr('Open ChatGPT Projects in a new tab')}><ExternalLink /><span>{tr('Open')}</span></a></div><small>{tr('The ChatGPT project folder link helps new ChatCMD conversations open in the correct project. Example: {url}', { url: 'https://chatgpt.com/g/g-p-{CODE}/project' })}</small></label>{projectError && <p className="workspace-project-error" role="alert">{projectError}</p>}<div className="modal-actions"><button className="button secondary" type="button" onClick={() => { setProjectModalOpen(false); setEditingProject(undefined); }} disabled={projectFolderPicking || projectSaving}>{tr('Cancel')}</button><button className="button primary" type="button" onClick={() => void saveProject()} disabled={projectFolderPicking || projectSaving || !projectName.trim() || !projectPath.trim()}>{projectSaving ? tr('Saving…') : editingProject ? tr('Save changes') : tr('Save')}</button></div></div></Modal>}
+    {projectModalOpen && <Modal className="workspace-project-modal" title={tr(editingProject ? 'Edit project' : 'Add project')} description={tr(editingProject ? 'Update the display name or project folders.' : 'Save a display name and project folders to group conversations by project.')} close={() => { if (!projectFolderPicking && !projectSaving) { setProjectModalOpen(false); setEditingProject(undefined); } }}><div className="workspace-project-form"><label><span>{tr('Name')}</span><input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={tr('Example: Dotty')} autoFocus maxLength={160} disabled={projectSaving} /></label><div className="workspace-project-folders-field"><label><span>{tr('Project folders')}</span></label><div className="workspace-project-folders-list">{projectPaths.map((path, index) => <div className="workspace-project-folder-row" key={index}><button className={`workspace-project-folder ${path ? '' : 'empty'}`} type="button" onClick={() => void pickProjectFolder(index)} disabled={projectFolderPicking || projectSaving} title={path || tr('Choose folder')}>{projectFolderPicking ? <LoaderCircle className="spin" /> : <FolderOpen />}<span>{path || tr('Choose folder')}</span></button>{projectPaths.length > 1 && <button className="workspace-project-folder-remove" type="button" onClick={() => removeProjectFolder(index)} disabled={projectFolderPicking || projectSaving} aria-label={tr('Remove folder')} title={tr('Remove folder')}><X /></button>}</div>)}</div><button className="workspace-project-add-folder-btn" type="button" onClick={() => void pickProjectFolder()} disabled={projectFolderPicking || projectSaving}><Plus /><span>{tr('Add project folder')}</span></button></div><label><span>{tr('Project link (for ChatGPT)')}</span><div className="workspace-project-link-row"><input value={projectChatGptUrl} onChange={(event) => setProjectChatGptUrl(event.target.value)} placeholder="https://chatgpt.com/g/g-p-{CODE}/project" disabled={projectSaving} /><a className="workspace-project-open-link" href="https://chatgpt.com/projects" target="_blank" rel="noreferrer" aria-label={tr('Open ChatGPT Projects in a new tab')} title={tr('Open ChatGPT Projects in a new tab')}><ExternalLink /><span>{tr('Open')}</span></a></div><small>{tr('The ChatGPT project folder link helps new ChatCMD conversations open in the correct project. Example: {url}', { url: 'https://chatgpt.com/g/g-p-{CODE}/project' })}</small></label>{projectError && <p className="workspace-project-error" role="alert">{projectError}</p>}<div className="modal-actions"><button className="button secondary" type="button" onClick={() => { setProjectModalOpen(false); setEditingProject(undefined); }} disabled={projectFolderPicking || projectSaving}>{tr('Cancel')}</button><button className="button primary" type="button" onClick={() => void saveProject()} disabled={projectFolderPicking || projectSaving || !projectName.trim() || !projectPaths.some((p) => p.trim())}>{projectSaving ? tr('Saving…') : editingProject ? tr('Save changes') : tr('Save')}</button></div></div></Modal>}
   </aside>;
 }
 

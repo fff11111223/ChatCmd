@@ -24,4 +24,32 @@ describe('workspace projects', () => {
     expect(groups.projects[0].tasks.map(({ id }) => id)).toEqual(['matched']);
     expect(groups.unclassified.map(({ id }) => id)).toEqual(['manual', 'missing']);
   });
+
+  it('groups tasks belonging to any folder in a multi-folder project', () => {
+    const projects: WorkspaceProject[] = [
+      {
+        id: 'project-multi',
+        name: 'Monorepo',
+        path: 'D:\\DEV\\Monorepo\\backend',
+        paths: ['D:\\DEV\\Monorepo\\backend', 'D:\\DEV\\Monorepo\\frontend', 'D:\\DEV\\Monorepo\\docs'],
+      },
+      {
+        id: 'project-single',
+        name: 'Solo',
+        path: 'D:\\DEV\\Solo',
+      },
+    ];
+    const task = (id: string, projectFolder?: string | null): Task => ({ id, projectFolder, status: 'completed', updatedAtUtc: '2026-01-01T00:00:00Z' });
+    const groups = groupTasksByWorkspaceProjects(projects, [
+      task('t-backend', 'd:/dev/monorepo/backend/'),
+      task('t-frontend', 'D:\\DEV\\Monorepo\\frontend'),
+      task('t-docs', 'd:/dev/monorepo/docs'),
+      task('t-solo', 'D:\\DEV\\Solo'),
+      task('t-other', 'D:\\DEV\\Unknown'),
+    ]);
+
+    expect(groups.projects[0].tasks.map(({ id }) => id)).toEqual(['t-backend', 't-frontend', 't-docs']);
+    expect(groups.projects[1].tasks.map(({ id }) => id)).toEqual(['t-solo']);
+    expect(groups.unclassified.map(({ id }) => id)).toEqual(['t-other']);
+  });
 });

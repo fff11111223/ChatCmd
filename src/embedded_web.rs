@@ -32,9 +32,15 @@ pub(crate) async fn serve(uri: Uri) -> Response {
 }
 
 fn asset_response(path: &str, bytes: Vec<u8>) -> Response {
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type(path))
+        .header(header::CONTENT_TYPE, content_type(path));
+
+    if path == "index.html" {
+        builder = builder.header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+    }
+
+    builder
         .body(Body::from(bytes))
         .expect("valid embedded asset response")
 }

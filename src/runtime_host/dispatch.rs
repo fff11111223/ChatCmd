@@ -35,7 +35,7 @@ impl RuntimeHost {
         arguments: Value,
     ) -> RuntimeResult<Value> {
         let filesystem_tool = is_filesystem_tool(tool);
-        let project_folder = if filesystem_tool
+        let (primary_project_folder, all_project_folders) = if filesystem_tool
             || tool.starts_with("git_")
             || tool == "shell_create"
             || tool == "shell_write"  // needed so command text can be scanned for out-of-scope paths
@@ -44,26 +44,33 @@ impl RuntimeHost {
             || tool == "project_context"
             || matches!(tool, "skills_list" | "skill_read")
         {
-            <Self as chatcmd_mcp::RuntimeApi>::project_folder(self, context.task_id.as_deref())
-                .await?
-                .map(std::path::PathBuf::from)
+            let folders = self.task_project_folders(context.task_id.as_deref()).await?;
+            let primary = folders.first().cloned();
+            (primary, folders)
         } else {
-            None
+            (None, Vec::new())
         };
+        let project_folder = primary_project_folder.clone();
         let mut task_path_scopes = if filesystem_tool
             || tool.starts_with("git_")
             || matches!(tool, "command_run" | "shell_create" | "workspace_roots")
         {
             let raw_scopes = self.task_user_path_scopes(&context).await?;
             // When sandbox is active, filter user-mentioned paths to only those
-            // within the project_folder. Without this, the AI gains access to ANY
+            // within the project_folders. Without this, the AI gains access to ANY
             // absolute path the user ever mentioned in chat (e.g. "read C:\Users\frank\secret.txt").
             if self.load_safety_settings_enforce_only().await {
-                if let Some(folder) = project_folder.as_deref() {
-                    let canonical_folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+                if !all_project_folders.is_empty() {
+                    let canonical_project_dirs: Vec<std::path::PathBuf> = all_project_folders
+                        .iter()
+                        .map(|f| super::safety_filter::strip_verbatim_prefix(&f.canonicalize().unwrap_or_else(|_| f.clone())))
+                        .collect();
                     raw_scopes
                         .into_iter()
-                        .filter(|p| p.starts_with(&canonical_folder))
+                        .filter(|p| {
+                            let p_canon = super::safety_filter::strip_verbatim_prefix(&p.canonicalize().unwrap_or_else(|_| p.clone()));
+                            canonical_project_dirs.iter().any(|cf| super::safety_filter::is_subpath(&p_canon, cf))
+                        })
                         .collect()
                 } else {
                     // No project folder — don't grant any extra scopes from user messages.
@@ -75,20 +82,20 @@ impl RuntimeHost {
         } else {
             Vec::new()
         };
-        if let Some(project_folder) = project_folder.as_ref().filter(|path| path.is_dir())
-            && !task_path_scopes.contains(project_folder)
-        {
-            task_path_scopes.push(project_folder.clone());
+        for folder in &all_project_folders {
+            if folder.is_dir() && !task_path_scopes.contains(folder) {
+                task_path_scopes.push(folder.clone());
+            }
         }
         let arguments = if filesystem_tool {
             filesystem_dispatch::resolve_relative_paths(arguments, project_folder.as_deref())?
         } else {
             arguments
         };
-        self.check_safety_filter(tool, &context, &arguments, project_folder.as_deref())
+        self.check_safety_filter(tool, &context, &arguments, &all_project_folders)
             .await?;
         if filesystem_tool || tool.starts_with("git_") {
-            // Only add argument-derived scopes that are within the project folder when
+            // Only add argument-derived scopes that are within the project folders when
             // the sandbox is active. Blindly adding any absolute path from tool arguments
             // as an allowed scope is a bypass vector — the AI can simply put an arbitrary
             // path in the arguments to gain filesystem access to it.
@@ -96,14 +103,13 @@ impl RuntimeHost {
             let settings_enforce = self.load_safety_settings_enforce_only().await;
             for scope in extra_scopes {
                 let allowed = if settings_enforce {
-                    // Sandbox on: only allow scopes that are inside the project_folder.
-                    project_folder
-                        .as_ref()
-                        .map(|folder| {
-                            let canonical_folder = folder.canonicalize().unwrap_or_else(|_| folder.clone());
-                            scope.starts_with(&canonical_folder)
-                        })
-                        .unwrap_or(false)
+                    // Sandbox on: only allow scopes that are inside any project folder.
+                    let canonical_project_dirs: Vec<std::path::PathBuf> = all_project_folders
+                        .iter()
+                        .map(|f| super::safety_filter::strip_verbatim_prefix(&f.canonicalize().unwrap_or_else(|_| f.clone())))
+                        .collect();
+                    let scope_canon = super::safety_filter::strip_verbatim_prefix(&scope.canonicalize().unwrap_or_else(|_| scope.clone()));
+                    canonical_project_dirs.iter().any(|cf| super::safety_filter::is_subpath(&scope_canon, cf))
                 } else {
                     // Sandbox off: allow any scope (original behaviour).
                     true
@@ -277,9 +283,12 @@ impl RuntimeHost {
                 let input: SessionInput = parse(arguments)?;
                 value(self.shell.inspect(&input.session_id).await?)
             }
-            "workspace_roots" => match project_folder {
-                Some(project_folder) => value(vec![project_folder]),
-                None => value(task_path_scopes),
+            "workspace_roots" => {
+                if !all_project_folders.is_empty() {
+                    value(all_project_folders)
+                } else {
+                    value(task_path_scopes)
+                }
             },
             "project_context" => {
                 let input: ProjectContextInput = parse(arguments)?;

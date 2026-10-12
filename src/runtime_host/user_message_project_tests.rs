@@ -240,3 +240,87 @@ async fn delegated_child_inherits_project_folder_and_keeps_internal_user_message
         .await
         .expect("child internal identity must see synchronized user message");
 }
+
+#[tokio::test]
+async fn multi_folder_project_resolves_all_roots_and_authorizes_both_folders() {
+    let (host, agent_id, _directory) = test_host().await;
+    let temp1 = TempDir::new().expect("tempdir1");
+    let temp2 = TempDir::new().expect("tempdir2");
+    let outside = TempDir::new().expect("outside");
+
+    let folder1 = temp1.path().canonicalize().expect("canon1").to_string_lossy().to_string();
+    let folder2 = temp2.path().canonicalize().expect("canon2").to_string_lossy().to_string();
+
+    let file1 = temp1.path().join("file1.txt");
+    let file2 = temp2.path().join("file2.txt");
+    let outside_file = outside.path().join("secret.txt");
+    std::fs::write(&file1, "content1").expect("write file1");
+    std::fs::write(&file2, "content2").expect("write file2");
+    std::fs::write(&outside_file, "secret").expect("write secret");
+
+    let paths_json = serde_json::to_string(&vec![folder1.clone(), folder2.clone()]).expect("paths json");
+    let project_id = "project-multi-test";
+    let canon1 = crate::api::workspaces::canonical_project_path(&folder1);
+    sqlx::query(
+        "INSERT INTO workspace_projects(id,name,path,canonical_path,paths,sort_order,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,1,0,0)",
+    )
+    .bind(project_id)
+    .bind("MultiProject")
+    .bind(&folder1)
+    .bind(&canon1)
+    .bind(&paths_json)
+    .execute(host.repository.pool())
+    .await
+    .expect("insert workspace project");
+
+    let task_id = "task-multi-project-test";
+    sqlx::query(
+        "INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,NULL,NULL,'mcp',?,'running',NULL,1,NULL,0,0)",
+    )
+    .bind(task_id)
+    .bind(&agent_id)
+    .bind(host.device.id.as_str())
+    .bind(&folder1)
+    .execute(host.repository.pool())
+    .await
+    .expect("insert task");
+
+    let mut roots_context = OperationContext::new("roots-call", &agent_id, "workspace_roots");
+    roots_context.task_id = Some(task_id.to_owned());
+    let roots = host
+        .dispatch("workspace_roots", roots_context, json!({}))
+        .await
+        .expect("read workspace roots");
+
+    let roots_arr = roots.as_array().expect("roots array");
+    assert_eq!(roots_arr.len(), 2);
+    assert!(roots_arr.iter().any(|v| v.as_str() == Some(&folder1)));
+    assert!(roots_arr.iter().any(|v| v.as_str() == Some(&folder2)));
+
+    // File in folder 1 can be read
+    let mut fs_context1 = OperationContext::new("fs-read-1", &agent_id, "fs_read_text");
+    fs_context1.task_id = Some(task_id.to_owned());
+    let read1 = host
+        .dispatch("fs_read_text", fs_context1, json!({"path": file1.to_string_lossy().to_string()}))
+        .await
+        .expect("read file1");
+    assert_eq!(read1["content"], "content1");
+
+    // File in folder 2 can be read
+    let mut fs_context2 = OperationContext::new("fs-read-2", &agent_id, "fs_read_text");
+    fs_context2.task_id = Some(task_id.to_owned());
+    let read2 = host
+        .dispatch("fs_read_text", fs_context2, json!({"path": file2.to_string_lossy().to_string()}))
+        .await
+        .expect("read file2");
+    assert_eq!(read2["content"], "content2");
+
+    // File outside both folders is rejected by sandbox
+    let mut fs_outside = OperationContext::new("fs-outside", &agent_id, "fs_read_text");
+    fs_outside.task_id = Some(task_id.to_owned());
+    let error = host
+        .dispatch("fs_read_text", fs_outside, json!({"path": outside_file.to_string_lossy().to_string()}))
+        .await
+        .expect_err("outside file must be rejected");
+    assert_eq!(error.code, "policy_denied");
+}

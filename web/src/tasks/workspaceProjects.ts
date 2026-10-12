@@ -12,8 +12,18 @@ export function canonicalProjectPath(path: string) {
 }
 
 export function groupTasksByWorkspaceProjects(projects: WorkspaceProject[], tasks: Task[]): WorkspaceTaskGroups {
+  const projectTasks = projects.map((project) => ({ project, tasks: [] as Task[] }));
   const byPath = new Map<string, Task[]>();
-  for (const project of projects) byPath.set(canonicalProjectPath(project.path), []);
+  for (const entry of projectTasks) {
+    const allPaths = entry.project.paths && entry.project.paths.length > 0
+      ? entry.project.paths
+      : [entry.project.path];
+    for (const p of allPaths) {
+      if (p && p.trim()) {
+        byPath.set(canonicalProjectPath(p), entry.tasks);
+      }
+    }
+  }
 
   const unclassified: Task[] = [];
   for (const task of tasks) {
@@ -24,7 +34,7 @@ export function groupTasksByWorkspaceProjects(projects: WorkspaceProject[], task
   }
 
   return {
-    projects: projects.map((project) => ({ project, tasks: byPath.get(canonicalProjectPath(project.path)) ?? [] })),
+    projects: projectTasks,
     unclassified,
   };
 }

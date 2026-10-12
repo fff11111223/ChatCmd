@@ -44,6 +44,17 @@
 .workspace-project-folder.empty{color:var(--muted)}
 .workspace-project-folder svg{width:18px;height:18px;flex:0 0 auto;color:var(--accent)}
 .workspace-project-folder span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workspace-project-folders-field{display:grid;gap:7px}
+.workspace-project-folders-field>label{display:grid;color:var(--muted);font-size:11px;font-weight:700}
+.workspace-project-folders-list{display:grid;gap:8px}
+.workspace-project-folder-row{display:flex;gap:8px;align-items:center}
+.workspace-project-folder-row .workspace-project-folder{flex:1;min-width:0}
+.workspace-project-folder-remove{width:42px;height:48px;display:grid;place-items:center;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);color:var(--muted);cursor:pointer;flex:0 0 42px;transition:color .14s ease,background .14s ease,border-color .14s ease}
+.workspace-project-folder-remove:hover{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 10%,var(--surface-2));color:var(--bad)}
+.workspace-project-folder-remove svg{width:16px;height:16px}
+.workspace-project-add-folder-btn{min-height:38px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px dashed var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;transition:all .14s ease}
+.workspace-project-add-folder-btn:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--border));border-style:solid;background:color-mix(in srgb,var(--accent) 6%,transparent);color:var(--text)}
+.workspace-project-add-folder-btn svg{width:15px;height:15px;color:var(--accent)}
 .workspace-project-error{margin:0;color:var(--bad);font-size:11px;line-height:1.4}
 .workspace-folder-choices{display:grid;gap:13px}
 .workspace-folder-project-list{max-height:min(420px,52dvh);overflow:auto;display:grid;gap:7px;padding-right:3px}

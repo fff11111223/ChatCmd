@@ -22,7 +22,8 @@ const MAX_PROJECT_PATH_CHARS: usize = 4_096;
 #[serde(rename_all = "camelCase")]
 pub(super) struct SaveWorkspaceProject {
     name: String,
-    path: String,
+    path: Option<String>,
+    paths: Option<Vec<String>>,
     #[serde(rename = "chatGptProjectUrl")]
     chatgpt_project_url: Option<String>,
 }
@@ -37,7 +38,7 @@ pub(super) async fn workspace_projects(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, Problem> {
     let rows = sqlx::query(
-        "SELECT id,name,path,chatgpt_project_url,sort_order,created_at_ms,updated_at_ms FROM workspace_projects ORDER BY COALESCE(sort_order, 2147483647), updated_at_ms DESC, name COLLATE NOCASE",
+        "SELECT id,name,path,canonical_path,paths,chatgpt_project_url,sort_order,created_at_ms,updated_at_ms FROM workspace_projects ORDER BY COALESCE(sort_order, 2147483647), updated_at_ms DESC, name COLLATE NOCASE",
     )
     .fetch_all(state.repository.pool())
     .await
@@ -47,24 +48,134 @@ pub(super) async fn workspace_projects(
     )))
 }
 
+fn resolve_and_validate_project_paths(
+    name: &str,
+    input_path: Option<&str>,
+    input_paths: Option<&[String]>,
+) -> Result<Vec<String>, Problem> {
+    if name.is_empty() {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid workspace project",
+            "name is required",
+        ));
+    }
+    if name.chars().count() > MAX_PROJECT_NAME_CHARS {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid workspace project",
+            "name is too long",
+        ));
+    }
+
+    let mut resolved = Vec::new();
+    if let Some(list) = input_paths {
+        for p in list {
+            let trimmed = p.trim();
+            if !trimmed.is_empty()
+                && !resolved
+                    .iter()
+                    .any(|existing: &String| canonical_project_path(existing) == canonical_project_path(trimmed))
+            {
+                resolved.push(trimmed.to_string());
+            }
+        }
+    }
+    if resolved.is_empty() {
+        if let Some(p) = input_path {
+            let trimmed = p.trim();
+            if !trimmed.is_empty() {
+                resolved.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if resolved.is_empty() {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid workspace project",
+            "at least one project folder path is required",
+        ));
+    }
+
+    for p in &resolved {
+        if p.chars().count() > MAX_PROJECT_PATH_CHARS {
+            return Err(Problem::new(
+                StatusCode::BAD_REQUEST,
+                "Invalid workspace project",
+                "path is too long",
+            ));
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn check_project_path_conflicts(
+    rows: &[sqlx::sqlite::SqliteRow],
+    target_canonical_paths: &[String],
+    exclude_project_id: Option<&str>,
+) -> Result<(), Problem> {
+    for row in rows {
+        let id = row.get::<String, _>("id");
+        if let Some(exclude) = exclude_project_id {
+            if id == exclude {
+                continue;
+            }
+        }
+        let project_canonical = row.get::<String, _>("canonical_path");
+        let project_paths: Vec<String> = row
+            .try_get::<Option<String>, _>("paths")
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| vec![row.get::<String, _>("path")]);
+
+        for target in target_canonical_paths {
+            if *target == project_canonical
+                || project_paths
+                    .iter()
+                    .any(|p| canonical_project_path(p) == *target)
+            {
+                return Err(Problem::new(
+                    StatusCode::CONFLICT,
+                    "Workspace project already exists",
+                    "This folder is already used by another project.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn save_workspace_project(
     State(state): State<Arc<AppState>>,
     Json(input): Json<SaveWorkspaceProject>,
 ) -> Result<Json<Value>, Problem> {
     let name = input.name.trim();
-    let path = input.path.trim();
+    let paths = resolve_and_validate_project_paths(name, input.path.as_deref(), input.paths.as_deref())?;
     let chatgpt_project_url = normalize_chatgpt_project_url(input.chatgpt_project_url.as_deref())?;
-    validate_project_input(name, path)?;
-    let canonical = canonical_project_path(path);
+
+    let existing_rows = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects")
+        .fetch_all(state.repository.pool())
+        .await
+        .map_err(db_problem)?;
+    let canonical_paths: Vec<String> = paths.iter().map(|p| canonical_project_path(p)).collect();
+    check_project_path_conflicts(&existing_rows, &canonical_paths, None)?;
+
+    let primary_path = &paths[0];
+    let primary_canonical = &canonical_paths[0];
+    let paths_json = serde_json::to_string(&paths).unwrap_or_default();
     let id = format!("project-{}", Uuid::new_v4());
     let now = now_ms();
     sqlx::query(
-        "INSERT INTO workspace_projects(id,name,path,canonical_path,chatgpt_project_url,sort_order,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM workspace_projects),?,?) ON CONFLICT(canonical_path) DO UPDATE SET name=excluded.name,path=excluded.path,chatgpt_project_url=excluded.chatgpt_project_url,updated_at_ms=excluded.updated_at_ms",
+        "INSERT INTO workspace_projects(id,name,path,canonical_path,paths,chatgpt_project_url,sort_order,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM workspace_projects),?,?) ON CONFLICT(canonical_path) DO UPDATE SET name=excluded.name,path=excluded.path,paths=excluded.paths,chatgpt_project_url=excluded.chatgpt_project_url,updated_at_ms=excluded.updated_at_ms",
     )
     .bind(&id)
     .bind(name)
-    .bind(path)
-    .bind(&canonical)
+    .bind(primary_path)
+    .bind(primary_canonical)
+    .bind(&paths_json)
     .bind(chatgpt_project_url.as_deref())
     .bind(now)
     .bind(now)
@@ -72,9 +183,9 @@ pub(super) async fn save_workspace_project(
     .await
     .map_err(db_problem)?;
     let row = sqlx::query(
-        "SELECT id,name,path,chatgpt_project_url,created_at_ms,updated_at_ms FROM workspace_projects WHERE canonical_path=?",
+        "SELECT id,name,path,canonical_path,paths,chatgpt_project_url,created_at_ms,updated_at_ms FROM workspace_projects WHERE canonical_path=?",
     )
-    .bind(&canonical)
+    .bind(primary_canonical)
     .fetch_one(state.repository.pool())
     .await
     .map_err(db_problem)?;
@@ -87,11 +198,10 @@ pub(super) async fn update_workspace_project(
     Json(input): Json<SaveWorkspaceProject>,
 ) -> Result<Json<Value>, Problem> {
     let name = input.name.trim();
-    let path = input.path.trim();
+    let paths = resolve_and_validate_project_paths(name, input.path.as_deref(), input.paths.as_deref())?;
     let chatgpt_project_url = normalize_chatgpt_project_url(input.chatgpt_project_url.as_deref())?;
-    validate_project_input(name, path)?;
 
-    let existing = sqlx::query("SELECT id,path,canonical_path FROM workspace_projects WHERE id=?")
+    let existing = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects WHERE id=?")
         .bind(&id)
         .fetch_optional(state.repository.pool())
         .await
@@ -104,31 +214,34 @@ pub(super) async fn update_workspace_project(
             )
         })?;
     let old_canonical = existing.get::<String, _>("canonical_path");
-    let canonical = canonical_project_path(path);
-    let duplicate = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM workspace_projects WHERE canonical_path=? AND id<>?",
-    )
-    .bind(&canonical)
-    .bind(&id)
-    .fetch_optional(state.repository.pool())
-    .await
-    .map_err(db_problem)?;
-    if duplicate.is_some() {
-        return Err(Problem::new(
-            StatusCode::CONFLICT,
-            "Workspace project already exists",
-            "This folder is already used by another project.",
-        ));
-    }
+    let old_paths: Vec<String> = existing
+        .try_get::<Option<String>, _>("paths")
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| vec![existing.get::<String, _>("path")]);
+    let old_canonical_paths: Vec<String> = old_paths.iter().map(|p| canonical_project_path(p)).collect();
+
+    let all_rows = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects")
+        .fetch_all(state.repository.pool())
+        .await
+        .map_err(db_problem)?;
+    let canonical_paths: Vec<String> = paths.iter().map(|p| canonical_project_path(p)).collect();
+    check_project_path_conflicts(&all_rows, &canonical_paths, Some(&id))?;
+
+    let primary_path = &paths[0];
+    let primary_canonical = &canonical_paths[0];
+    let paths_json = serde_json::to_string(&paths).unwrap_or_default();
 
     let now = now_ms();
     let mut transaction = state.repository.pool().begin().await.map_err(db_problem)?;
     sqlx::query(
-        "UPDATE workspace_projects SET name=?,path=?,canonical_path=?,chatgpt_project_url=?,updated_at_ms=? WHERE id=?",
+        "UPDATE workspace_projects SET name=?,path=?,canonical_path=?,paths=?,chatgpt_project_url=?,updated_at_ms=? WHERE id=?",
     )
     .bind(name)
-    .bind(path)
-    .bind(&canonical)
+    .bind(primary_path)
+    .bind(primary_canonical)
+    .bind(&paths_json)
     .bind(chatgpt_project_url.as_deref())
     .bind(now)
     .bind(&id)
@@ -136,7 +249,7 @@ pub(super) async fn update_workspace_project(
     .await
     .map_err(db_problem)?;
 
-    if old_canonical != canonical {
+    if old_canonical != *primary_canonical {
         let task_rows =
             sqlx::query("SELECT id,project_folder FROM tasks WHERE project_folder IS NOT NULL")
                 .fetch_all(&mut *transaction)
@@ -144,9 +257,9 @@ pub(super) async fn update_workspace_project(
                 .map_err(db_problem)?;
         for row in task_rows {
             let folder = row.get::<String, _>("project_folder");
-            if canonical_project_path(&folder) == old_canonical {
+            if old_canonical_paths.contains(&canonical_project_path(&folder)) {
                 sqlx::query("UPDATE tasks SET project_folder=?,updated_at_ms=? WHERE id=?")
-                    .bind(path)
+                    .bind(primary_path)
                     .bind(now)
                     .bind(row.get::<String, _>("id"))
                     .execute(&mut *transaction)
@@ -160,9 +273,9 @@ pub(super) async fn update_workspace_project(
             .map_err(db_problem)?;
         for row in request_rows {
             let folder = row.get::<String, _>("project_folder");
-            if canonical_project_path(&folder) == old_canonical {
+            if old_canonical_paths.contains(&canonical_project_path(&folder)) {
                 sqlx::query("UPDATE chatgpt_bridge_requests SET project_folder=?,updated_at_ms=? WHERE id=?")
-                    .bind(path)
+                    .bind(primary_path)
                     .bind(now)
                     .bind(row.get::<String, _>("id"))
                     .execute(&mut *transaction)
@@ -174,7 +287,7 @@ pub(super) async fn update_workspace_project(
     transaction.commit().await.map_err(db_problem)?;
 
     let row = sqlx::query(
-        "SELECT id,name,path,chatgpt_project_url,created_at_ms,updated_at_ms FROM workspace_projects WHERE id=?",
+        "SELECT id,name,path,canonical_path,paths,chatgpt_project_url,created_at_ms,updated_at_ms FROM workspace_projects WHERE id=?",
     )
     .bind(&id)
     .fetch_one(state.repository.pool())
@@ -187,7 +300,7 @@ pub(super) async fn delete_workspace_project(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Problem> {
-    let row = sqlx::query("SELECT id,canonical_path FROM workspace_projects WHERE id=?")
+    let row = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects WHERE id=?")
         .bind(&id)
         .fetch_optional(state.repository.pool())
         .await
@@ -199,7 +312,17 @@ pub(super) async fn delete_workspace_project(
                 "Project no longer exists.",
             )
         })?;
-    let canonical = row.get::<String, _>("canonical_path");
+    let project_paths: Vec<String> = row
+        .try_get::<Option<String>, _>("paths")
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| vec![row.get::<String, _>("path")]);
+    let project_canonical_paths: Vec<String> = project_paths
+        .iter()
+        .map(|p| canonical_project_path(p))
+        .collect();
+
     let child_ids = sqlx::query_scalar::<_, String>(
         "SELECT child_task_id FROM subagent_runs WHERE child_task_id IS NOT NULL",
     )
@@ -218,7 +341,7 @@ pub(super) async fn delete_workspace_project(
     let mut preserved = 0usize;
     for task_row in task_rows {
         let folder = task_row.get::<String, _>("project_folder");
-        if canonical_project_path(&folder) != canonical {
+        if !project_canonical_paths.contains(&canonical_project_path(&folder)) {
             continue;
         }
         let task_id = task_row.get::<String, _>("id");
@@ -268,25 +391,6 @@ async fn has_active_descendant(state: &Arc<AppState>, task_id: &str) -> Result<b
     Ok(count > 0)
 }
 
-fn validate_project_input(name: &str, path: &str) -> Result<(), Problem> {
-    if name.is_empty() || path.is_empty() {
-        return Err(Problem::new(
-            StatusCode::BAD_REQUEST,
-            "Invalid workspace project",
-            "name and path are required",
-        ));
-    }
-    if name.chars().count() > MAX_PROJECT_NAME_CHARS
-        || path.chars().count() > MAX_PROJECT_PATH_CHARS
-    {
-        return Err(Problem::new(
-            StatusCode::BAD_REQUEST,
-            "Invalid workspace project",
-            "name or path is too long",
-        ));
-    }
-    Ok(())
-}
 
 fn normalize_chatgpt_project_url(value: Option<&str>) -> Result<Option<String>, Problem> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -349,7 +453,7 @@ pub(super) async fn reorder_workspace_projects(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn canonical_project_path(path: &str) -> String {
+pub(crate) fn canonical_project_path(path: &str) -> String {
     let mut value = path.trim().replace('\\', "/");
     while value.len() > 1 && value.ends_with('/') {
         value.pop();
@@ -363,10 +467,18 @@ fn canonical_project_path(path: &str) -> String {
 }
 
 fn workspace_project_value(row: &sqlx::sqlite::SqliteRow) -> Value {
+    let primary_path = row.get::<String, _>("path");
+    let paths: Vec<String> = row
+        .try_get::<Option<String>, _>("paths")
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| vec![primary_path.clone()]);
     json!({
         "id": row.get::<String, _>("id"),
         "name": row.get::<String, _>("name"),
-        "path": row.get::<String, _>("path"),
+        "path": primary_path,
+        "paths": paths,
         "chatGptProjectUrl": row.get::<Option<String>, _>("chatgpt_project_url"),
         "createdAtUtc": iso_ms(row.get::<i64, _>("created_at_ms")),
         "updatedAtUtc": iso_ms(row.get::<i64, _>("updated_at_ms"))
