@@ -191,3 +191,34 @@ async function hasReturnSource(chatGptTabId) {
   if (!sourceTabId) return false;
   return Boolean(await safeTab(sourceTabId));
 }
+
+async function reloadChatTabs() {
+  const chatGptTabsList = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  const geminiTabsList = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+  const allTabs = [...chatGptTabsList, ...geminiTabsList];
+  for (const tab of allTabs) {
+    if (tab?.id) {
+      try {
+        await chrome.tabs.reload(tab.id);
+        if (typeof logExtension === 'function') {
+          await logExtension('info', 'tabs', `Reloaded browser tab ${tab.id} (${tab.url})`);
+        }
+      } catch (err) {
+        if (typeof logExtension === 'function') {
+          await logExtension('warn', 'tabs', `Failed to reload tab ${tab.id}: ${errorMessage(err)}`);
+        }
+      }
+    }
+  }
+  if (typeof recoverContentScriptsOnStartup === 'function') {
+    await recoverContentScriptsOnStartup();
+  }
+  if (typeof reconcileOpenChatGptIdentities === 'function') {
+    void reconcileOpenChatGptIdentities();
+  }
+  if (typeof reconcileOpenGeminiIdentities === 'function') {
+    void reconcileOpenGeminiIdentities();
+  }
+  return { reloadedCount: allTabs.length };
+}
+

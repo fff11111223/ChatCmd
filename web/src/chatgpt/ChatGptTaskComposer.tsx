@@ -1,8 +1,8 @@
-import { CircleAlert, CircleStop, ExternalLink, FileText, FolderOpen, LoaderCircle, PlugZap, Send, Unplug, X } from 'lucide-react';
+import { CircleAlert, CircleStop, ExternalLink, FileText, FolderOpen, LoaderCircle, PlugZap, RotateCw, Send, Unplug, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
-import { chatGptExtensionAvailable, chatGptExtensionStatus, closeChatGptConversationTab, dispatchChatGptRequest, focusChatGptConversationTab, openChatGptConversationTab, reconcileChatGptRequest, recoverChatGptIdentity, stopChatGptRequest } from '../chatgptBridge';
+import { chatGptExtensionAvailable, chatGptExtensionStatus, closeChatGptConversationTab, dispatchChatGptRequest, focusChatGptConversationTab, openChatGptConversationTab, reconcileChatGptRequest, recoverChatGptIdentity, reloadBrowserChatTabs, stopChatGptRequest } from '../chatgptBridge';
 import { Modal } from '../components';
 import { tr } from '../i18n';
 import { canonicalProjectPath } from '../tasks/workspaceProjects';
@@ -33,6 +33,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
   const [extensionReady, setExtensionReady] = useState<boolean | null>(null);
   const [chatGptTabOpen, setChatGptTabOpen] = useState<boolean | null>(null);
   const [chatGptReady, setChatGptReady] = useState<boolean | null>(null);
+  const [reloadingTabs, setReloadingTabs] = useState(false);
   const [queueMode, setQueueMode] = useState<ChatGptQueueMode | null>(null);
   const agents = useLoad(api.agents, []);
   const projects = useLoad(api.workspaceProjects, []);
@@ -220,6 +221,22 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     } catch (reason) { setError(errorText(reason)); }
   };
 
+  const reloadTabs = async () => {
+    if (reloadingTabs) return;
+    setReloadingTabs(true); setError('');
+    try {
+      await reloadBrowserChatTabs();
+      await reloadBridge();
+      if (conversationUrl) {
+        const status = await chatGptExtensionStatus(conversationUrl, provider);
+        setExtensionReady(status.ready);
+        setChatGptTabOpen(status.ready && status.conversationTabOpen);
+        setChatGptReady(status.ready && status.conversationTabOpen && status.conversationReady);
+      }
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setReloadingTabs(false); }
+  };
+
   const recoveryError = bridge.error || syncError;
   const isGemini = provider === 'gemini';
   const connectionNotice = bridge.loading
@@ -227,11 +244,11 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     : !bridge.data
       ? <div className="chatgpt-composer error" role="alert"><CircleAlert /><span>{bridge.error || (isGemini ? tr('Gemini bridge information is unavailable.') : tr('ChatGPT bridge information is unavailable.'))}</span></div>
       : !conversationUrl
-        ? <div className={`chatgpt-composer ${recoveryError ? 'error' : 'loading'}`} role={recoveryError ? 'alert' : 'status'}>{recoveryError ? <CircleAlert /> : <LoaderCircle className="spin" />}<span>{recoveryError || (isGemini ? tr('Gemini conversation identity is still syncing.') : tr('ChatGPT conversation identity is still syncing.'))}</span></div>
+        ? <div className={`chatgpt-composer ${recoveryError ? 'error' : 'loading'}`} role={recoveryError ? 'alert' : 'status'}>{recoveryError ? <CircleAlert /> : <LoaderCircle className="spin" />}<span>{recoveryError || (isGemini ? tr('Gemini conversation identity is still syncing.') : tr('ChatGPT conversation identity is still syncing.'))}</span><button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button></div>
         : extensionReady === false
-          ? <div className="chatgpt-tab-required error" role="alert"><Unplug /><div><strong>{isGemini ? tr('Could not connect to Gemini Bridge') : tr('Could not connect to ChatGPT Bridge')}</strong><span>{tr('Enable or reload the extension, then return to this conversation.')}</span></div></div>
+          ? <div className="chatgpt-tab-required error" role="alert"><Unplug /><div><strong>{isGemini ? tr('Could not connect to Gemini Bridge') : tr('Could not connect to ChatGPT Bridge')}</strong><span>{tr('Enable or reload the extension, then return to this conversation.')}</span></div><button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button></div>
           : chatGptTabOpen === false
-            ? <div className="chatgpt-tab-required" role="alert"><CircleAlert /><div><strong>{isGemini ? tr('This conversation’s Gemini tab is closed') : tr('This conversation’s ChatGPT tab is closed')}</strong><span>{isGemini ? tr('ChatCMD must keep this exact Gemini tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.') : tr('ChatCMD must keep this exact ChatGPT tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.')}</span><button type="button" onClick={() => void openTab()} disabled={busy || compactPaused || bridgeSync}><ExternalLink />{isGemini ? tr('Open Gemini conversation') : tr('Open ChatGPT conversation')}</button></div></div>
+            ? <div className="chatgpt-tab-required" role="alert"><CircleAlert /><div><strong>{isGemini ? tr('This conversation’s Gemini tab is closed') : tr('This conversation’s ChatGPT tab is closed')}</strong><span>{isGemini ? tr('ChatCMD must keep this exact Gemini tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.') : tr('ChatCMD must keep this exact ChatGPT tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.')}</span><div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}><button type="button" onClick={() => void openTab()} disabled={busy || compactPaused || bridgeSync}><ExternalLink />{isGemini ? tr('Open Gemini conversation') : tr('Open ChatGPT conversation')}</button><button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button></div></div></div>
             : bridgeSync ? <p role="status">{compactText('bridgeSync')}</p> : null;
   return <>
     {!isGemini && <CompactStatusCard />}
@@ -260,6 +277,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
       <div className="chatgpt-composer-meta chatgpt-composer-actions">
         <button type="button" onClick={() => void closeTab()} disabled={busy || compactPaused || bridgeSync}>{tr('Close this tab')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => void focusTab()} disabled={busy || compactPaused || bridgeSync}>{isGemini ? tr('Focus Gemini tab') : tr('Change model')}</button><span aria-hidden="true">|</span>
+        <button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs} title={tr('Reload browser pages (ChatGPT / Gemini)')}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => setQueueMode('queued')} disabled={busy || compactPaused || bridgeSync}>{tr('Queue another message')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => setQueueMode('immediate')} disabled={busy || compactPaused || bridgeSync}>{tr('Send immediate message')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => { setFolderMenuOpen(true); void projects.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach project')}</button>

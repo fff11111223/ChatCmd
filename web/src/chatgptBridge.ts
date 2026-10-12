@@ -20,7 +20,8 @@ type BridgeCommand =
   | { action: 'subagent-close'; nonce: string; subagentId: string }
   | { action: 'stop'; nonce: string; requestId: string; localBaseUrl: string }
   | { action: 'reconcile'; nonce: string; requestId: string }
-  | { action: 'recover-identity'; nonce: string; requestId: string; submittedContent: string; localBaseUrl: string };
+  | { action: 'recover-identity'; nonce: string; requestId: string; submittedContent: string; localBaseUrl: string }
+  | { action: 'reload-tabs'; nonce: string };
 
 export type ChatGptExtensionLog = { at: string; level: 'info' | 'warn' | 'error' | string; source: string; message: string };
 type BridgeResponse = { nonce: string; ok: boolean; recovered?: boolean; reason?: string; error?: string; model?: string; logs?: ChatGptExtensionLog[]; extensionVersion?: string; chatGptTabOpen?: boolean; conversationTabOpen?: boolean; conversationReady?: boolean; tabId?: number; tabUrl?: string };
@@ -98,6 +99,15 @@ export async function recoverChatGptIdentity(requestId: string, submittedContent
 
 export async function resumeChatGptCompact(jobId: string, taskId: string) {
   await bridge({ action: 'compact-resume', nonce: nonce(), jobId, taskId, localBaseUrl: window.location.origin }, 5_000);
+}
+
+export async function reloadBrowserChatTabs(): Promise<{ ok: boolean; reloadedCount: number }> {
+  try {
+    const response = await bridge({ action: 'reload-tabs', nonce: nonce() }, 8_000);
+    return { ok: response.ok, reloadedCount: (response as Record<string, unknown>).reloadedCount as number ?? 0 };
+  } catch {
+    return { ok: false, reloadedCount: 0 };
+  }
 }
 
 function bridge(command: BridgeCommand, timeoutMs: number) {

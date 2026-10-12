@@ -1,10 +1,10 @@
-import { Bot, CircleAlert, CircleStop, ExternalLink, FileText, FolderOpen, LoaderCircle, MessageSquarePlus, Send, ShieldCheck, Sparkles, Unplug, X } from 'lucide-react';
+import { Bot, CircleAlert, CircleStop, ExternalLink, FileText, FolderOpen, LoaderCircle, MessageSquarePlus, RotateCw, Send, ShieldCheck, Sparkles, Unplug, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ClipboardEvent, FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { api } from '../api';
-import { chatGptExtensionAvailable, chatGptExtensionStatus, closeChatGptConversationTab, dispatchChatGptRequest, focusChatGptConversationTab, openChatGptConversationTab, prepareChatGptModelTab, reconcileChatGptRequest, recoverChatGptIdentity, stopChatGptRequest } from '../chatgptBridge';
+import { chatGptExtensionAvailable, chatGptExtensionStatus, closeChatGptConversationTab, dispatchChatGptRequest, focusChatGptConversationTab, openChatGptConversationTab, prepareChatGptModelTab, reconcileChatGptRequest, recoverChatGptIdentity, reloadBrowserChatTabs, stopChatGptRequest } from '../chatgptBridge';
 import { Modal } from '../components';
 import { tr } from '../i18n';
 import { canonicalProjectPath } from '../tasks/workspaceProjects';
@@ -43,6 +43,7 @@ export function NewChatGptConversation() {
   const [confirmWithoutFolder, setConfirmWithoutFolder] = useState(false);
   const [extensionReady, setExtensionReady] = useState<boolean | null>(null);
   const [chatGptTabOpen, setChatGptTabOpen] = useState<boolean | null>(null);
+  const [reloadingTabs, setReloadingTabs] = useState(false);
   const selectedProject = useMemo(() => (projects.data ?? []).find((project) => canonicalProjectPath(project.path) === canonicalProjectPath(projectFolder)), [projectFolder, projects.data]);
   const newConversationUrl = selectedProject?.chatGptProjectUrl?.trim() || (canonicalProjectPath(projectFolder) === canonicalProjectPath(launchProjectFolder) ? launchProjectChatGptUrl : '') || undefined;
   const [busy, setBusy] = useState(false);
@@ -104,6 +105,21 @@ export function NewChatGptConversation() {
     } finally { setModelTabOpening(false); }
   };
 
+  const reloadTabs = async () => {
+    if (reloadingTabs) return;
+    setReloadingTabs(true); setError('');
+    try {
+      await reloadBrowserChatTabs();
+      const status = await chatGptExtensionStatus(undefined, provider);
+      setExtensionReady(status.ready);
+      setChatGptTabOpen(status.chatGptTabOpen);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : tr('Could not reload browser pages.'));
+    } finally {
+      setReloadingTabs(false);
+    }
+  };
+
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const text = event.clipboardData.getData('text/plain');
     const attachment = textAttachmentFromPaste(text, pasteSequence.current + 1);
@@ -154,11 +170,12 @@ export function NewChatGptConversation() {
         </div>
         <div className="chatgpt-chat-controls">
           <span className={`chatgpt-connection-dot ${extensionReady === false ? 'missing' : extensionReady ? 'ready' : ''}`} title={extensionReady === null ? tr('Checking extension…') : extensionReady ? tr('Extension ready') : tr('Extension not connected')}>{extensionReady === null ? <LoaderCircle className="spin" /> : extensionReady ? <MessageSquarePlus /> : <Unplug />}</span>
+          <button className="chatgpt-log-link" type="button" onClick={() => void reloadTabs()} disabled={reloadingTabs} title={tr('Reload browser pages (ChatGPT / Gemini)')}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />} <span>{tr('Reload browser pages')}</span></button>
           <button className="chatgpt-log-link" type="button" onClick={() => window.dispatchEvent(new Event('chatcmd:open-extension-logs'))}>{tr('View extension logs')}</button>
         </div>
       </header>
 
-      {extensionReady && chatGptTabOpen === false && <div className="chatgpt-chat-notice" role="status"><CircleAlert /><span><strong>{provider === 'gemini' ? tr('No blank Gemini tab is open for a new conversation.') : tr('No blank ChatGPT tab is open for a new conversation.')}</strong> {provider === 'gemini' ? tr('After you send the message, ChatCMD will automatically open a Gemini tab and continue there.') : tr('After you send the message, ChatCMD will automatically open a new ChatGPT tab and continue there.')}</span></div>}
+      {extensionReady && chatGptTabOpen === false && <div className="chatgpt-chat-notice" role="status"><CircleAlert /><span><strong>{provider === 'gemini' ? tr('No blank Gemini tab is open for a new conversation.') : tr('No blank ChatGPT tab is open for a new conversation.')}</strong> {provider === 'gemini' ? tr('After you send the message, ChatCMD will automatically open a Gemini tab and continue there.') : tr('After you send the message, ChatCMD will automatically open a new ChatGPT tab and continue there.')}</span><button type="button" className="chatgpt-log-link" onClick={() => void reloadTabs()} disabled={reloadingTabs} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />} <span>{tr('Reload browser pages')}</span></button></div>}
 
       <div className="chatgpt-chat-thread" aria-live="polite">
         <div className="chatgpt-ai-message">

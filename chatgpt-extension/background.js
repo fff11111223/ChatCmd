@@ -110,6 +110,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
       return true;
     }
+    if (message.action === 'reload-tabs') {
+      void reloadChatTabs()
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+      return true;
+    }
   }
   if (message.type === 'chatcmd-chatgpt-observation-resume') {
     void resumeObservationRequest(sender.tab?.id).then((request) => sendResponse({ ok: true, request }))

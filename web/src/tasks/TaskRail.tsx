@@ -1,8 +1,9 @@
-import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, Search, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, RotateCw, Search, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEventHandler } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { api } from '../api';
+import { reloadBrowserChatTabs } from '../chatgptBridge';
 import { Empty, ErrorState, Loading, Modal } from '../components';
 import { appLocale, tr } from '../i18n';
 import { useRealtime } from '../realtime';
@@ -77,6 +78,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
   const [showMoveMenu, setShowMoveMenu] = useState(false); const [movingToProject, setMovingToProject] = useState(false); const [moveError, setMoveError] = useState('');
 
   const [readFinalCounts, setReadFinalCounts] = useState<Record<string, number>>(readStoredFinalCounts);
+  const [reloadingTabs, setReloadingTabs] = useState(false);
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [draggedProjectId, setDraggedProjectId] = useState<string>(); const [dragOverProjectId, setDragOverProjectId] = useState<string>();
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(() => new Set([UNCLASSIFIED_GROUP]));
@@ -105,9 +107,27 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
   useEffect(() => { void applyFirstPage(); }, [applyFirstPage]);
   useEffect(() => {
     const cleared = () => { setLoadedTasks([]); setNextCursor(undefined); setReadFinalCounts({}); void applyFirstPage(); };
+    const refresh = () => { void applyFirstPage(); };
     window.addEventListener('chatcmd:conversations-cleared', cleared);
-    return () => window.removeEventListener('chatcmd:conversations-cleared', cleared);
+    window.addEventListener('chatcmd:refresh-conversations', refresh);
+    return () => {
+      window.removeEventListener('chatcmd:conversations-cleared', cleared);
+      window.removeEventListener('chatcmd:refresh-conversations', refresh);
+    };
   }, [applyFirstPage]);
+
+  const reloadTabs = async () => {
+    if (reloadingTabs) return;
+    setReloadingTabs(true);
+    try {
+      await reloadBrowserChatTabs();
+      await applyFirstPage();
+    } catch {
+      /* best effort */
+    } finally {
+      setReloadingTabs(false);
+    }
+  };
   useEffect(() => { visibleTaskIds.current = new Set(loadedTasks.map((task) => task.id)); }, [loadedTasks]);
   useEffect(() => { if (loading || hadStoredReadCounts.current) return; hadStoredReadCounts.current = true; setReadFinalCounts(Object.fromEntries(loadedTasks.map((task) => [task.id, task.finalResponseCount ?? 0]))); }, [loadedTasks, loading]);
   const handleRealtime = useCallback((event: TimelineEvent) => { if (event.type === 'system.connected') { void refreshHead(); return; } if (!event.taskId) return; if (visibleTaskIds.current.has(event.taskId)) setLoadedTasks((current) => upsertTaskEvent(current, event) ?? current); else void refreshHead(); }, [refreshHead]);
@@ -263,6 +283,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
       <div className="task-rail-toolbar">
         <button className="task-rail-collapse" type="button" aria-label={tr('Close conversation rail')} title={tr('Close conversation rail')} onClick={onDesktopCollapse}><PanelLeftClose /></button>
         <label className="tasks-conversation-search"><Search /><span className="sr-only">{tr('Search conversations')}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr('Search')} /></label>
+        <button className="task-rail-reload-tabs" type="button" aria-label={tr('Reload browser pages')} title={tr('Reload browser pages (ChatGPT / Gemini)')} onClick={() => void reloadTabs()} disabled={reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}</button>
         <Link className="task-rail-new-message" to="/tasks/new" state={{ agentOrder: 'recent' }} aria-label={tr('New message')} title={tr('New message')}><Plus /></Link>
       </div>
       <div className="task-projects-title"><strong>{tr('Projects')}</strong><button type="button" onClick={() => openProjectModal()} aria-label={tr('Add project')} title={tr('Add project')}><Plus /></button></div>
