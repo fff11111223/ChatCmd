@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as Re
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { api } from '../api';
-import { reloadBrowserChatTabs } from '../chatgptBridge';
+import { prepareChatGptModelTab, reloadBrowserChatTabs } from '../chatgptBridge';
 import { Empty, ErrorState, Loading, Modal } from '../components';
 import { appLocale, tr } from '../i18n';
 import { useRealtime } from '../realtime';
@@ -74,7 +74,7 @@ export function FunctionRail({ taskRailCollapsed, onTaskRailToggle }: { taskRail
 
 export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; onClose: () => void; onDesktopCollapse: () => void }) {
   const location = useLocation(); const navigate = useNavigate(); const taskId = activeTaskId(location.pathname);
-  const [loadedTasks, setLoadedTasks] = useState<Task[]>([]); const [nextCursor, setNextCursor] = useState<string>(); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false); const [error, setError] = useState(''); const [query, setQuery] = useState(''); const [contextMenu, setContextMenu] = useState<{ task: Task; x: number; y: number }>(); const [deleteTarget, setDeleteTarget] = useState<Task>(); const [deleting, setDeleting] = useState(false); const [deleteError, setDeleteError] = useState('');
+  const [loadedTasks, setLoadedTasks] = useState<Task[]>([]); const [nextCursor, setNextCursor] = useState<string>(); const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false); const [error, setError] = useState(''); const [reloadError, setReloadError] = useState(''); const [chatGptTabMissing, setChatGptTabMissing] = useState(false); const [openingChatGptTab, setOpeningChatGptTab] = useState(false); const [query, setQuery] = useState(''); const [contextMenu, setContextMenu] = useState<{ task: Task; x: number; y: number }>(); const [deleteTarget, setDeleteTarget] = useState<Task>(); const [deleting, setDeleting] = useState(false); const [deleteError, setDeleteError] = useState('');
   const [showMoveMenu, setShowMoveMenu] = useState(false); const [movingToProject, setMovingToProject] = useState(false); const [moveError, setMoveError] = useState('');
 
   const [readFinalCounts, setReadFinalCounts] = useState<Record<string, number>>(readStoredFinalCounts);
@@ -119,13 +119,29 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
   const reloadTabs = async () => {
     if (reloadingTabs) return;
     setReloadingTabs(true);
+    setReloadError('');
+    setChatGptTabMissing(false);
     try {
-      await reloadBrowserChatTabs();
+      const status = await reloadBrowserChatTabs();
+      setChatGptTabMissing(status.chatGptTabCount === 0 && status.geminiTabCount > 0);
       await applyFirstPage();
-    } catch {
-      /* best effort */
+    } catch (reason) {
+      setReloadError(reason instanceof Error ? reason.message : tr('Could not reload browser pages.'));
     } finally {
       setReloadingTabs(false);
+    }
+  };
+  const openChatGptTab = async () => {
+    if (openingChatGptTab) return;
+    setOpeningChatGptTab(true);
+    setReloadError('');
+    try {
+      await prepareChatGptModelTab();
+      setChatGptTabMissing(false);
+    } catch (reason) {
+      setReloadError(reason instanceof Error ? reason.message : tr('Could not open ChatGPT.'));
+    } finally {
+      setOpeningChatGptTab(false);
     }
   };
   useEffect(() => { visibleTaskIds.current = new Set(loadedTasks.map((task) => task.id)); }, [loadedTasks]);
@@ -287,6 +303,8 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
         <Link className="task-rail-new-message" to="/tasks/new" state={{ agentOrder: 'recent' }} aria-label={tr('New message')} title={tr('New message')}><Plus /></Link>
       </div>
       <div className="task-projects-title"><strong>{tr('Projects')}</strong><button type="button" onClick={() => openProjectModal()} aria-label={tr('Add project')} title={tr('Add project')}><Plus /></button></div>
+      {reloadError && <p className="task-rail-load-error" role="alert">{reloadError}</p>}
+      {chatGptTabMissing && <div className="task-rail-load-error" role="status"><span>{tr('No ChatGPT page was found. A Gemini page is open.')}</span><button className="task-rail-open-chatgpt" type="button" onClick={() => void openChatGptTab()} disabled={openingChatGptTab}>{openingChatGptTab ? <LoaderCircle className="spin" /> : <ExternalLink />}{tr('Open ChatGPT')}</button></div>}
     </header>
     <div className="task-rail-body"><div className="task-rail-list" onScroll={(event) => { const target = event.currentTarget; if (target.scrollHeight - target.scrollTop - target.clientHeight < 180) void loadMore(); }}>
       {loading ? <Loading label={tr('Loading tasks')} /> : error && !tasks.length ? <ErrorState message={error} retry={() => void applyFirstPage()} /> : <>

@@ -31,7 +31,7 @@ const en = {
   step3Title: 'Load the packaged extension',
   step3Body: 'Choose Load unpacked, then select the chatgpt-extension folder that ships beside ChatCMD.',
   step4Title: 'Reload ChatCMD and verify',
-  step4Body: 'Return to ChatCMD, reload the page, then use Check again. ChatCMD currently requires extension version 0.1.12.',
+  step4Body: 'Return to ChatCMD, reload the page, then use Check again. ChatCMD currently requires extension version 0.1.25.',
 };
 
 type ExtensionCopy = { [K in keyof typeof en]: string };
@@ -67,7 +67,7 @@ const vi: ExtensionCopy = {
   step3Title: 'Load the ChatCMD extension',
   step3Body: 'Choose Load unpacked, then select the chatgpt-extension folder beside the ChatCMD installation.',
   step4Title: 'Reload ChatCMD and check again',
-  step4Body: 'Return to ChatCMD, reload the page, then click Check again. ChatCMD currently requires extension version 0.1.12.',
+  step4Body: 'Return to ChatCMD, reload the page, then click Check again. ChatCMD currently requires extension version 0.1.25.',
 };
 
 export function extensionCopy(language: AppLanguage) {

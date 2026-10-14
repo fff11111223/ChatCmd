@@ -24,7 +24,16 @@ void globalThis.ChatCmdRuntime.sendMessage({ type: 'chatcmd-return-binding-statu
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT)) return false;
-  if (message?.type === 'chatcmd-content-alive' && message.kind === 'chatgpt') { sendResponse({ ok: true, kind: 'chatgpt', captureProtocol: 2, compactProtocol: globalThis.ChatCmdCompact?.version, clockProtocol: globalThis.ChatCmdCaptureClock?.version, renderProtocol: globalThis.ChatCmdRenderBridge?.version, captureReady: Boolean(globalThis.ChatCmdCaptureClock && globalThis.ChatCmdObserver && globalThis.ChatCmdTranscript && globalThis.ChatCmdNativeCapture) }); return false; }
+  if (message?.type === 'chatcmd-content-alive' && message.kind === 'chatgpt') {
+    const captureModules = {
+      clock: Boolean(globalThis.ChatCmdCaptureClock), observer: Boolean(globalThis.ChatCmdObserver),
+      transcript: Boolean(globalThis.ChatCmdTranscript), native: Boolean(globalThis.ChatCmdNativeCapture),
+    };
+    sendResponse({ ok: true, kind: 'chatgpt', captureProtocol: 2, compactProtocol: globalThis.ChatCmdCompact?.version,
+      clockProtocol: globalThis.ChatCmdCaptureClock?.version, renderProtocol: globalThis.ChatCmdRenderBridge?.version,
+      captureModules, captureReady: Object.values(captureModules).every(Boolean) });
+    return false;
+  }
   if (message?.type === 'chatcmd-chatgpt-run') {
     const composer = findComposer();
     if (!composer || findStopButton() || globalThis.ChatCmdCompact?.busy) {
@@ -187,21 +196,27 @@ async function waitForComposer() {
 function findComposer() {
   const direct = findUsableComposer(document, [
     '#prompt-textarea', '[data-testid="prompt-textarea"]', 'textarea[name="prompt-textarea"]',
-    'form textarea', 'form [role="textbox"]', 'form .ProseMirror[contenteditable="true"]',
+    'form textarea', 'form [role="textbox"]', 'form .ProseMirror',
     'form [contenteditable="plaintext-only"]', 'form [contenteditable="true"]',
-    '[role="textbox"][contenteditable="true"]', '[contenteditable="plaintext-only"]',
+    '.ProseMirror[contenteditable="true"]', '.ProseMirror',
+    '[role="textbox"][contenteditable="true"]', '[role="textbox"]',
+    '[contenteditable="plaintext-only"]', '[contenteditable="true"]',
+    'div[contenteditable="true"]', 'textarea',
   ]);
   return direct || findComposerNearSendButton();
 }
 
 function findComposerNearSendButton() {
-  const sendButton = findVisible(['button[data-testid="send-button"]', 'button[aria-label="Send prompt"]', 'button[aria-label="Send message"]', 'button[aria-label*="send" i]']);
+  const sendButton = findVisible([
+    'button[data-testid="send-button"]', 'button[data-testid="composer-submit-button"]',
+    'button[aria-label*="send" i]', 'button[aria-label*="傳送"]', 'button[aria-label*="送出"]', 'button[aria-label*="發送"]',
+  ]);
   if (!sendButton) return null;
   const scopes = [];
   const form = sendButton.closest('form');
   if (form) scopes.push(form);
   for (let parent = sendButton.parentElement, depth = 0; parent && depth < 6; depth += 1, parent = parent.parentElement) if (!scopes.includes(parent)) scopes.push(parent);
-  const generic = ['textarea', '[role="textbox"]', '.ProseMirror[contenteditable]', '[contenteditable="plaintext-only"]', '[contenteditable="true"]'];
+  const generic = ['textarea', '[role="textbox"]', '.ProseMirror', '[contenteditable="plaintext-only"]', '[contenteditable="true"]', '[contenteditable]'];
   for (const scope of scopes) { const composer = findUsableComposer(scope, generic); if (composer) return composer; }
   return null;
 }
@@ -213,8 +228,7 @@ function findUsableComposer(root, selectors) {
 
 function isUsableComposer(element) {
   if (!isVisible(element)) return false;
-  if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) return !element.disabled;
-  return element.getAttribute('aria-disabled') !== 'true' && element.getAttribute('contenteditable') !== 'false';
+  return (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) ? !element.disabled : (element.getAttribute('aria-disabled') !== 'true' && element.getAttribute('contenteditable') !== 'false');
 }
 
 function composerMissingMessage() {
@@ -237,7 +251,6 @@ async function selectModel(model) {
   option.click();
   await delay(200);
 }
-
 
 function findModelSwitcherButton() {
   const selectors = ['button[data-testid="model-switcher-dropdown-button"]', 'button[aria-label*="model" i]', 'button[id*="model" i]'];
@@ -344,7 +357,7 @@ function pasteFilesIntoComposer(composer, files) {
 
 async function submitPrompt(composer) {
   await delay(100);
-  const button = await waitFor(findSendButton, 5_000, 'ChatGPT send button was not found.');
+  const button = await waitFor(() => findSendButton(composer), 5_000, 'ChatGPT send button was not found.');
   if (button.disabled || button.getAttribute('aria-disabled') === 'true') {
     await waitFor(() => !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null, 20_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
   }

@@ -21,6 +21,8 @@ async function injectChatGptScripts(tabId) {
 
 async function recoverContentScriptsOnStartup() {
   const tabs = await chrome.tabs.query({});
+  const failures = [];
+  let recoveredCount = 0;
   for (const tab of tabs) {
     if (!tab?.id || !tab.url) continue;
     const plan = CONTENT_SCRIPT_PLANS.find((item) => item.matches(tab.url));
@@ -28,11 +30,40 @@ async function recoverContentScriptsOnStartup() {
     try {
       if (plan.kind === 'chatgpt') await injectChatGptScripts(tab.id);
       else await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: plan.files });
-await logExtension('info', 'background', "Restored content script ${plan.kind} on tab ${tab.id} after extension reload.");
+      if (!await waitForContentScript(tab.id, plan.kind)) {
+        throw new Error('Scripts were injected, but the content script did not pass its health check.');
+      }
+      recoveredCount += 1;
+      await logExtension('info', 'background', `Restored content script ${plan.kind} on tab ${tab.id} after extension reload.`);
     } catch (error) {
       await logExtension('warn', 'background', `Unable to restore the ${plan.kind} content script on tab ${tab.id}: ${errorMessage(error)}`);
+      failures.push({ kind: plan.kind, tabId: tab.id, error: errorMessage(error) });
     }
   }
+  return { recoveredCount, failures };
+}
+
+async function waitForContentScript(tabId, kind) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (await contentScriptAlive(tabId, kind)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(await contentScriptHealthError(tabId, kind));
+}
+
+async function contentScriptHealthError(tabId, kind) {
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(tabId, { type: 'chatcmd-content-alive', kind });
+  } catch (error) {
+    return `No ${kind} content listener responded: ${errorMessage(error)}`;
+  }
+  if (kind === 'chatgpt' && response?.captureModules) {
+    const missing = Object.entries(response.captureModules).filter(([, ready]) => !ready).map(([name]) => name);
+    if (missing.length) return `ChatGPT listener is present, but capture modules are missing: ${missing.join(', ')}.`;
+  }
+  if (kind === 'chatgpt' && response?.captureReady !== true) return 'ChatGPT listener responded, but native capture did not become ready.';
+  return `${kind} content listener returned an incompatible health response.`;
 }
 
 async function contentScriptAlive(tabId, kind) {

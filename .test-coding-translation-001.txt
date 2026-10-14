@@ -1,0 +1,79 @@
+﻿# Development progress of ChatCMD transition to MCP
+
+> Deployment time: **IMPLEMENTED_AUTOMATED_ONLY / LIVE_VALIDATION_BLOCKED**[25D[K
+LIVE_VALIDATION_BLOCKED**.
+> Deployment date: **2026-09-05**. Initial deployment baseline on branch `d[2D[K
+`dev`, commit `f8ea45f139e3ea9c3886f726c42030aab3d64d7f`; not yet committin[9D[K
+committing changes.
+> Date of implementation: **2026-09-05**. Baseline for evaluation branch: `[1D[K
+`dev`, commit `983f360`.
+> Repository path: `/Users/ducnghia/Downloads/dev/ChatCmdClient`.
+> Scope of review materials: creation of `plan/coding.md`; no source code c[1D[K
+changes, no commits.
+
+This material must involve AI continuous integration within a new developme[9D[K
+development cycle. Before deployment, the entire plan should be thoroughly [K
+reviewed and checked against the working tree and current source code. Ensu[4D[K
+Ensure that any duds or symbols used are properly verified before implement[9D[K
+implementing them; do not accept changes that introduce `new` items without[7D[K
+without verification; ensure that the `audit` command is used to check the [K
+baseline values and not modify patches.
+
+## 1. Objectives and Implementation Guidelines
+
+The objective is an MCP that helps AI perform these tasks: understand requi[5D[K
+requirements, provide context, select appropriate solutions, review diffs p[1D[K
+presented for approval, and verify work through a code review process. Do n[1D[K
+not include prompts, tools, or security notifications in the implementation[14D[K
+implementation process.
+
+There are three phases to be implemented:
+
+1. **AI Guidelines:** A common coding process and project rules based on sc[2D[K
+scope and skill set alignment.
+2. **Tool Integration:** Schema, description, results, rollback support wit[3D[K
+with minimal downtime compared to runtime.
+3. **Runtime Settings:** Permissions setup, performance tuning, and verific[7D[K
+verification of processes and server-logged assertions.
+
+Key constraints:
+
+- Do not modify implementation requirements during review/plan approval. Re[2D[K
+Record the plan details in the plan file, do not run the entire content.
+- The `planMode=false` directive must be implemented in user messages, skil[4D[K
+skills, or sentences in READMEs as needed.
+- AI should not implement policies. Policies must be set through the policy[6D[K
+policy settings defined by the user and approved by the server.
+- Do not make any changes to production codebases, do not commit/push/reset[17D[K
+commit/push/reset/clean, do not change settings or translations outside the[3D[K
+the required scope.
+- Avoid lifecycle completion with verification tasks.
+- Complete partial/blocked/notRun results; do not create unfinished AI loop[4D[K
+loop steps that fail.
+- Enforce task/turn isolation, idempotency, versioned edits, budget/cancell[14D[K
+budget/cancellation, lease/watchdog, and artifact/persistence boundaries.
+- Restrictions of ChatCmdClient should not affect other MCP branches. For e[1D[K
+example: solving 500 lines of React code locally using the API provided by [K
+ChatCMD.Api when the repository project rules are different.
+- Do not include shell commands that could reveal system context or securit[7D[K
+security checks like `cwd`. Running code in a sandbox OS is considered diff[4D[K
+different.
+- No prompt should cover multiple model/host instances simultaneously. Ensu[4D[K
+Ensure that the scope and behavior of the implementation are thoroughly rev[3D[K
+reviewed.
+
+### 1.1. Scope beyond the requirements of this task
+
+Do not develop IDEs, language servers, symbol indexes, new framework agents[6D[K
+agents, cloud services, or command-line tools in general. Do not change the[3D[K
+the host model. Do not re-implement Plan 08?23 if primitive changes are alr[3D[K
+already deployable. Do not upgrade dependencies or perform CI releases on p[1D[K
+push.
+
+The sandbox OS provides a hardened environment for standalone applications.[13D[K
+applications. This task requires strict adherence to MCP test variable cont[4D[K
+controls and minimal read-only sandboxes per testing environment/command-li[22D[K
+environment/command-line.
+
+## 2. Baseline and Evaluation Criteria
+

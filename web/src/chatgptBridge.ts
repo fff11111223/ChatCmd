@@ -4,7 +4,7 @@ import { tr } from './i18n';
 const REQUEST_TYPE = 'chatcmd-chatgpt-extension-request';
 const RESPONSE_TYPE = 'chatcmd-chatgpt-extension-response';
 
-export const REQUIRED_CHATGPT_EXTENSION_VERSION = '0.1.12';
+export const REQUIRED_CHATGPT_EXTENSION_VERSION = '0.1.25';
 
 type BridgeCommand =
   | { action: 'compact-resume'; nonce: string; jobId: string; taskId: string; localBaseUrl: string }
@@ -101,12 +101,34 @@ export async function resumeChatGptCompact(jobId: string, taskId: string) {
   await bridge({ action: 'compact-resume', nonce: nonce(), jobId, taskId, localBaseUrl: window.location.origin }, 5_000);
 }
 
-export async function reloadBrowserChatTabs(): Promise<{ ok: boolean; reloadedCount: number }> {
+export async function reloadBrowserChatTabs(): Promise<{ ok: boolean; reloadedCount: number; chatGptTabCount: number; geminiTabCount: number }> {
   try {
-    const response = await bridge({ action: 'reload-tabs', nonce: nonce() }, 8_000);
-    return { ok: response.ok, reloadedCount: (response as Record<string, unknown>).reloadedCount as number ?? 0 };
-  } catch {
-    return { ok: false, reloadedCount: 0 };
+    const response = await bridge({ action: 'reload-tabs', nonce: nonce() }, 40_000);
+    const result = response as BridgeResponse & {
+      reloadedCount?: number;
+      tabCount?: number;
+      chatGptTabCount?: number;
+      geminiTabCount?: number;
+      chatGptRecoveryErrors?: Array<{ error?: string }>;
+    };
+    if (typeof result.chatGptTabCount !== 'number' || typeof result.geminiTabCount !== 'number') {
+      throw new Error(`ChatCMD requires ChatGPT extension version ${REQUIRED_CHATGPT_EXTENSION_VERSION}. Reload the unpacked extension, then try again.`);
+    }
+    const recoveryError = result.chatGptRecoveryErrors?.[0]?.error;
+    if (recoveryError) throw new Error(`ChatGPT page reloaded, but its capture script could not start: ${recoveryError}`);
+    if (result.tabCount !== undefined && result.reloadedCount !== result.tabCount) {
+      throw new Error(result.tabCount
+        ? `Reloaded ${result.reloadedCount ?? 0} of ${result.tabCount} browser pages. Check the extension logs for details.`
+        : 'No ChatGPT or Gemini browser pages were found to reload.');
+    }
+    return {
+      ok: true,
+      reloadedCount: result.reloadedCount ?? 0,
+      chatGptTabCount: result.chatGptTabCount ?? 0,
+      geminiTabCount: result.geminiTabCount ?? 0,
+    };
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(tr('Could not reload browser pages.'));
   }
 }
 

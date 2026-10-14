@@ -22,17 +22,28 @@
   }
 
   function assistantNodes() {
-    return [...document.querySelectorAll('[data-message-author-role="assistant"]')].filter(isVisible);
+    const isUiText = (node) => globalThis.ChatCmdTranscript?.isNonAnswerUiText?.(node?.innerText || node?.textContent || '') || false;
+    const semantic = [...document.querySelectorAll('[data-message-author-role="assistant"]')]
+      .filter((node) => isVisible(node) && !isUiText(node));
+    if (semantic.length) return semantic;
+    const user = globalThis.ChatCmdTranscript?.latestUser?.();
+    return user ? globalThis.ChatCmdTranscript.readParts(user)
+      .filter((part) => part.kind === 'answer' && isVisible(part.node) && !isUiText(part.node)).map((part) => part.node) : [];
   }
 
   function latestMessageText(role) {
+    if (role === 'user') {
+      const user = globalThis.ChatCmdTranscript?.latestUser?.();
+      if (user?.content) return user.content;
+    }
     const nodes = [...document.querySelectorAll(`[data-message-author-role="${role}"]`)].filter(isVisible);
-    const latest = nodes.at(-1);
+    const latest = (role === 'assistant' ? assistantNodes() : nodes).at(-1);
     return latest?.innerText?.trim() || latest?.textContent?.trim() || '';
   }
 
   function findThreadError() {
-    const latestUser = [...document.querySelectorAll('[data-message-author-role="user"]')].filter(isVisible).at(-1);
+    const latestUser = globalThis.ChatCmdTranscript?.latestUser?.()?.node
+      || [...document.querySelectorAll('[data-message-author-role="user"]')].filter(isVisible).at(-1);
     const latestAssistant = assistantNodes().at(-1);
     const candidates = [...document.querySelectorAll([
       'button[data-testid="regenerate-thread-error-button"]',
@@ -69,12 +80,31 @@
     if (button) button.click();
   }
 
-  function findSendButton() {
-    return findVisible([
+  function findSendButton(composer = null) {
+    const selectors = [
       'button[data-testid="send-button"]',
+      'button[data-testid="composer-submit-button"]',
       'button[aria-label="Send prompt"]',
       'button[aria-label="Send message"]',
-    ]);
+      'button[aria-label="Send"]',
+      'button[aria-label*="傳送"],button[aria-label*="送出"],button[aria-label*="發送"]',
+      'button[title*="傳送"],button[title*="送出"],button[title*="發送"]',
+    ];
+    const scope = composer?.closest('form,[data-type="unified-composer"],[data-testid*="composer" i]') || document;
+    const exact = findVisibleWithin(scope, selectors);
+    if (exact) return exact;
+    const submit = [...scope.querySelectorAll('button[type="submit"]')].find((button) => isVisible(button)
+      && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+    if (submit) return submit;
+    if (!composer || scope === document) return null;
+    const ignored = /stop|voice|microphone|dictat|attach|upload|search|model|menu|停止|語音|麥克風|附件|上傳|搜尋|選擇|聆聽/i;
+    const afterComposer = [...scope.querySelectorAll('button')].filter((button) => {
+      if (!isVisible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`;
+      return !ignored.test(label)
+        && Boolean(composer.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    return afterComposer.at(-1) || null;
   }
 
   globalThis.ChatCmdConversationDom = Object.freeze({

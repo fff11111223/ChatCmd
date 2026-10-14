@@ -139,7 +139,24 @@
       }
     }
 
-    // 2. Inline tags: [[CHATCMD_TOOL_CALL:{...}]]
+    // 2. Inline code after a standalone protocol label. ChatGPT may render
+    //    `chatcmd_tool_call` followed by a single-backtick JSON span instead
+    //    of preserving the requested fenced code block.
+    const inlineLabelOpener = /\bchatcmd_tool_call\b\s*(`{1,2})(?!`)\s*/gi;
+    while ((m = inlineLabelOpener.exec(text)) !== null) {
+      const braceIndex = text.indexOf('{', inlineLabelOpener.lastIndex);
+      if (braceIndex === -1) continue;
+      const pre = text.slice(inlineLabelOpener.lastIndex, braceIndex);
+      if (!/^\s*$/.test(pre)) continue;
+      const extracted = extractJsonObject(text, braceIndex);
+      if (!extracted) continue;
+      const closing = text.slice(extracted.endIndex + 1).match(/^\s*(`{1,2})(?!`)/);
+      if (closing?.[1].length !== m[1].length) continue;
+      tryAdd(extracted.json);
+      inlineLabelOpener.lastIndex = Math.max(inlineLabelOpener.lastIndex, extracted.endIndex + closing[0].length + 1);
+    }
+
+    // 3. Inline tags: [[CHATCMD_TOOL_CALL:{...}]]
     const inlineOpener = /\[\[CHATCMD_TOOL_CALL:/gi;
     while ((m = inlineOpener.exec(text)) !== null) {
       const braceIndex = text.indexOf('{', inlineOpener.lastIndex);
@@ -152,7 +169,7 @@
       }
     }
 
-    // 3. Fallback: Any JSON code block with "tool" and "id".
+    // 4. Fallback: Any JSON code block with "tool" and "id".
     //    IMPORTANT: skip blocks tagged with chatcmd_* language identifiers other than
     //    chatcmd_tool_call (e.g. chatcmd_tool_result), to prevent result blocks from
     //    being mistakenly re-dispatched as new calls after reset().

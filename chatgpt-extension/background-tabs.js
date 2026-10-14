@@ -11,18 +11,36 @@ async function chatGptTabStatus(conversationUrl, sourceTabId) {
   }
   let ready = false;
   try {
-    const response = await sendToChatGpt(tab.id, { type: 'chatcmd-chatgpt-ready' }, { quiet: true });
+    let response = await sendToChatGpt(tab.id, { type: 'chatcmd-chatgpt-ready' }, { quiet: true });
     ready = response?.composerReady === true && response?.generating !== true;
+    if (!ready && !response?.composerReady && typeof injectChatGptScripts === 'function') {
+      await injectChatGptScripts(tab.id).catch(() => undefined);
+      if (typeof delay === 'function') await delay(100);
+      response = await sendToChatGpt(tab.id, { type: 'chatcmd-chatgpt-ready' }, { quiet: true });
+      ready = response?.composerReady === true && response?.generating !== true;
+    }
     if (!ready) {
       await logExtension(
         'warn',
         'ready-check',
-`Tab ${tab.id} not ready: composerReady=${response?.composerReady === true}, generating=${response?.generating === true}, ready=${response?.ready === true}.`,
+        `Tab ${tab.id} not ready: composerReady=${response?.composerReady === true}, generating=${response?.generating === true}, ready=${response?.ready === true}.`,
       );
     }
   } catch (error) {
-    await logExtension('warn', 'ready-check', `Unable to read ready state of tab ${tab.id}: ${errorMessage(error)}`);
-    ready = false;
+    if (typeof injectChatGptScripts === 'function') {
+      try {
+        await injectChatGptScripts(tab.id);
+        if (typeof delay === 'function') await delay(100);
+        const retryResponse = await sendToChatGpt(tab.id, { type: 'chatcmd-chatgpt-ready' }, { quiet: true });
+        ready = retryResponse?.composerReady === true && retryResponse?.generating !== true;
+      } catch {
+        ready = false;
+      }
+    }
+    if (!ready) {
+      await logExtension('warn', 'ready-check', `Unable to read ready state of tab ${tab.id}: ${errorMessage(error)}`);
+      ready = false;
+    }
   }
   return {
     chatGptTabOpen: true,
@@ -196,29 +214,59 @@ async function reloadChatTabs() {
   const chatGptTabsList = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
   const geminiTabsList = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
   const allTabs = [...chatGptTabsList, ...geminiTabsList];
-  for (const tab of allTabs) {
-    if (tab?.id) {
-      try {
-        await chrome.tabs.reload(tab.id);
-        if (typeof logExtension === 'function') {
-          await logExtension('info', 'tabs', `Reloaded browser tab ${tab.id} (${tab.url})`);
-        }
-      } catch (err) {
-        if (typeof logExtension === 'function') {
-          await logExtension('warn', 'tabs', `Failed to reload tab ${tab.id}: ${errorMessage(err)}`);
-        }
+  const reloadPromises = allTabs.map(async (tab) => {
+    if (!tab?.id) return false;
+    try {
+      await reloadAndWaitForTab(tab.id);
+      if (typeof logExtension === 'function') {
+        await logExtension('info', 'tabs', `Reloaded browser tab ${tab.id} (${tab.url})`);
       }
+      return true;
+    } catch (err) {
+      if (typeof logExtension === 'function') {
+        await logExtension('warn', 'tabs', `Failed to reload tab ${tab.id}: ${errorMessage(err)}`);
+      }
+      return false;
     }
+  });
+  const reloadResults = await Promise.all(reloadPromises);
+  if (typeof delay === 'function') {
+    await delay(300);
   }
-  if (typeof recoverContentScriptsOnStartup === 'function') {
-    await recoverContentScriptsOnStartup();
-  }
+  const recovery = typeof recoverContentScriptsOnStartup === 'function'
+    ? await recoverContentScriptsOnStartup()
+    : { failures: [] };
   if (typeof reconcileOpenChatGptIdentities === 'function') {
     void reconcileOpenChatGptIdentities();
   }
   if (typeof reconcileOpenGeminiIdentities === 'function') {
     void reconcileOpenGeminiIdentities();
   }
-  return { reloadedCount: allTabs.length };
+  return {
+    reloadedCount: reloadResults.filter(Boolean).length,
+    tabCount: allTabs.length,
+    chatGptTabCount: chatGptTabsList.filter((tab) => tab?.id).length,
+    geminiTabCount: geminiTabsList.filter((tab) => tab?.id).length,
+    chatGptRecoveryErrors: (recovery?.failures || []).filter((failure) => failure.kind === 'chatgpt'),
+  };
+}
+
+function reloadAndWaitForTab(tabId) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error('The browser page did not finish reloading within 30 seconds.')), 30_000);
+    const listener = (changedId, info) => {
+      if (changedId === tabId && info.status === 'complete') finish();
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (error) reject(error); else resolve();
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.reload(tabId).catch(finish);
+  });
 }
 

@@ -54,8 +54,11 @@ async function sendToChatGpt(tabId, payload, options = {}) {
         try {
           await logExtension('info', 'background', `Re-injecting ChatGPT content scripts into tab ${tabId}.`);
           await injectChatGptScripts(tabId);
-          await logExtension('info', 'background', `Injecting ChatGPT content scripts into tab ${tabId} successfully.`);
-          await delay(150);
+          const healthy = typeof waitForContentScript === 'function'
+            ? await waitForContentScript(tabId, 'chatgpt')
+            : await contentScriptAlive(tabId, 'chatgpt');
+          if (!healthy) throw new Error('Content scripts were injected, but the ChatGPT capture listener did not become ready. Check the extension version and page permissions.');
+          await logExtension('info', 'background', `ChatGPT content scripts passed the health check on tab ${tabId}.`);
           continue;
         } catch (injectError) {
           lastError = injectError;
@@ -363,7 +366,7 @@ function isNewConversationUrl(value, target = CHATGPT_HOME) {
   try {
     const url = new URL(value || '');
     const expected = new URL(target || CHATGPT_HOME);
-    return url.origin === expected.origin && url.pathname === expected.pathname && !url.search && !url.hash;
+    return url.origin === expected.origin && url.pathname === expected.pathname;
   } catch { return false; }
 }
 

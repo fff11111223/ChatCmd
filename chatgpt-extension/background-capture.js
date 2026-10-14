@@ -4,6 +4,7 @@ const captureCapabilities = new Map();
 async function handleNativeTurn(message, sender) {
   const tabId = sender.tab?.id;
   if (!tabId || (sender.frameId !== undefined && sender.frameId !== 0)) throw new Error('Native capture requires the top-level tab.');
+  await logExtension('info', 'capture', `ChatGPT tab ${tabId}: native capture request received.`);
   const tab = await safeTab(tabId);
   const id = conversationIdFromUrl(tab?.url || '');
   if (!id || id !== message.conversationId || conversationIdFromUrl(message.conversationUrl || '') !== id) {
@@ -40,6 +41,7 @@ async function handleNativeTurn(message, sender) {
   if (conversationIdFromUrl((await safeTab(tabId))?.url || '') !== id) throw new Error('Tab navigated during capture enrollment.');
   await chrome.storage.session.set({ [requestKey(request.id)]: { tabId, localBaseUrl, conversationUrl: tab.url } });
   await bindConversationTab(id, tabId, { requestId: request.id, localBaseUrl });
+  await logExtension('info', 'capture', `ChatGPT tab ${tabId}: local capture acknowledged (status=${request.status || 'unknown'}).`);
   return { request };
 }
 
@@ -51,7 +53,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'chatcmd-capture-diagnostic') {
     if (!sender.tab?.id || (!isChatGptUrl(sender.tab.url) && !isGeminiUrl(sender.tab.url))) return false;
-    if (message.state === 'error') void logExtension('warn', 'capture', String(message.detail || '').slice(0, 500));
+    const state = String(message.state || 'unknown').slice(0, 80);
+    const detail = String(message.detail || '').replace(/[\r\n]+/g, ' ').slice(0, 1200);
+    const level = state.includes('error') || state.includes('missing') ? 'warn' : 'info';
+    void logExtension(level, 'capture', `${isGeminiUrl(sender.tab.url) ? 'Gemini' : 'ChatGPT'} tab ${sender.tab.id}: ${state}${detail ? ` (${detail})` : ''}`);
     sendResponse({ ok: true });
   }
   return false;

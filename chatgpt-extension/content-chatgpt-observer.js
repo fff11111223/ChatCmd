@@ -27,6 +27,7 @@
     let userNode = user?.node || null;
     let conversationId = prior?.conversationId || (user ? dom.conversationId() : '');
     let messages = Array.isArray(prior?.messages) ? prior.messages : [];
+    messages = messages.filter((message) => !dom.isNonAnswerUiText?.(message?.content));
     let revision = Number(prior?.revision) || Date.now();
     let acknowledged = 0;
     let complete = prior?.completed === true;
@@ -72,7 +73,11 @@
       }
       const used = new Set();
       let changed = false;
-      for (const [index, part] of dom.readParts(user).entries()) {
+      const parts = dom.readParts(user);
+      if (!parts.some((part) => part.kind === 'answer')) {
+        globalThis.ChatCmdCaptureStatus?.report('transcript-empty', dom.readDiagnostics?.(user) || `parsedParts=${parts.length}`);
+      }
+      for (const [index, part] of parts.entries()) {
         let message = ids.get(part.node);
         if (!message) {
           message = messages.find((entry) => !used.has(entry.id) &&
@@ -97,6 +102,11 @@
         }
       }
       messages = messages.filter((message) => message.content);
+      const withoutUiText = messages.filter((message) => !dom.isNonAnswerUiText?.(message.content));
+      if (withoutUiText.length !== messages.length) {
+        messages = withoutUiText;
+        changed = true;
+      }
       if (changed) { dirty = true; revision = Math.max(revision + 1, Date.now()); checkpoint(); }
     }
     async function flush(completed = false, scanFirst = true) {
@@ -162,7 +172,10 @@
     return {
       scan, flush, stop, finish,
       bind() { bound = true; return flush(); },
-      get answer() { return [...messages].reverse().find((message) => message.kind === 'answer')?.content || ''; },
+      get answer() {
+        return messages.filter((message) => message.kind === 'answer' && message.content?.trim())
+          .map((message) => message.content.trim()).join('\n\n');
+      },
       get userMessageId() { return userId; },
       get hasTurn() {
         return Boolean(userId) && messages.some((message) => message.kind === 'answer' && Boolean(message.content?.trim()));

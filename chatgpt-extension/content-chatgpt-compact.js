@@ -33,8 +33,8 @@
     return protocol.canonical(read(node));
   }
   const promptMatches = (node, prompt) => comparable(composerText(node)) === comparable(prompt);
-  function readySendButton() {
-    const button = dom.findSendButton();
+  function readySendButton(composer) {
+    const button = dom.findSendButton(composer);
     return button?.isConnected && !button.disabled && button.getAttribute('aria-disabled') !== 'true'
       && !dom.findStopButton() ? button : null;
   }
@@ -150,7 +150,7 @@
     }
     // Let the worker poll while React enables/replaces Send. Rewriting on each poll
     // would restart that update and a page timer may be suspended in a hidden tab.
-    return { ready: promptMatches(controller.findComposer(), prompt) && Boolean(readySendButton()), documentToken };
+    return { ready: promptMatches(controller.findComposer(), prompt) && Boolean(readySendButton(composer)), documentToken };
   }
   async function dispatch(job, kind, expectedToken) {
     if (dispatching || expectedToken !== documentToken || !isCurrent() || !ownsPage(job, kind)) throw new Error('Cannot send: the ChatGPT document has changed.');
@@ -161,7 +161,7 @@
     const composer = controller.findComposer();
     const prompt = promptFor(job, kind, composer);
     if (!composer || !promptMatches(composer, prompt)) throw new Error('The draft changed; compact will not overwrite the content.');
-    const button = readySendButton();
+    const button = readySendButton(composer);
     // This explicit acknowledgement is the ONLY safe retry proof. Exceptions and
     // missing responses remain ambiguous and must keep the durable dispatch fence.
     if (!button) return { sent: false, retryable: true, documentToken };
