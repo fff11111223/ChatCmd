@@ -38,6 +38,8 @@
     let timer = null;
     let inFlight;
     let lastSend = 0;
+    let lastScanSignature = '';
+    let fallbackRescanUntil = Date.now() + 180_000;
     const clock = globalThis.ChatCmdCaptureClock;
     const later = (fn, ms) => clock ? clock.later(fn, ms) : setTimeout(fn, ms);
     const cancel = (id) => clock ? clock.cancel(id) : clearTimeout(id);
@@ -54,7 +56,10 @@
         else { stop(); return; }
       }
       if (!conversationId && id) conversationId = id;
-      const user = dom.latestUser();
+      // Preserve the original submitted bubble on role-less ChatGPT layouts;
+      // otherwise the generic text fallback may select the newer assistant
+      // bubble and stop this request-scoped observer before it captures output.
+      const user = dom.latestUser(userNode);
       if (!user) return;
       if (!userId) {
         if ((!resumed && user.id === baseline) || !matchesSubmitted(dom, user.text, submittedContent)) return;
@@ -74,8 +79,19 @@
       const used = new Set();
       let changed = false;
       const parts = dom.readParts(user);
+      const toolCallParts = parts.filter((part) => /```+\s*chatcmd_tool_call\b/i.test(part.content));
+      const toolBlocks = dom.toolBlockDiagnostics?.(user) || 'visiblePre=unknown';
+      const scanSignature = `${parts.map((part) => `${part.kind}:${part.content.length}:${/```+\s*chatcmd_tool_call\b/i.test(part.content) ? 1 : 0}`).join(',')}|${toolBlocks}`;
+      if (scanSignature !== lastScanSignature) {
+        lastScanSignature = scanSignature;
+        fallbackRescanUntil = Date.now() + 180_000;
+        globalThis.ChatCmdCaptureStatus?.report('transcript-scan',
+          `parts=${parts.length}; answerParts=${parts.filter((part) => part.kind === 'answer').length}; `
+          + `commentaryParts=${parts.filter((part) => part.kind === 'commentary').length}; `
+          + `toolCallParts=${toolCallParts.length}; chars=${parts.reduce((total, part) => total + part.content.length, 0)}; ${toolBlocks}`);
+      }
       if (!parts.some((part) => part.kind === 'answer')) {
-        globalThis.ChatCmdCaptureStatus?.report('transcript-empty', dom.readDiagnostics?.(user) || `parsedParts=${parts.length}`);
+        globalThis.ChatCmdCaptureStatus?.report('transcript-empty', dom.readDiagnostics?.(user, parts) || `parsedParts=${parts.length}`);
       }
       for (const [index, part] of parts.entries()) {
         let message = ids.get(part.node);
@@ -111,6 +127,28 @@
     }
     async function flush(completed = false, scanFirst = true) {
       if (scanFirst) scan();
+      // ChatGPT can signal completion just before the final rendered bubble is
+      // attached. Keep this request-scoped observer alive briefly and rescan the
+      // rendered DOM so a late final mutation is not persisted as an empty turn.
+      const capturedAnswerChars = () => messages.filter((message) => message.kind === 'answer')
+        .reduce((total, message) => total + (message.content?.length || 0), 0);
+      // A short prefix can be the only visible fragment while ChatGPT is still
+      // attaching the rest of a streamed answer or its tool-call block. Reconcile
+      // short captures too; an answer's mere presence is not proof it is complete.
+      if (completed && capturedAnswerChars() < 120) {
+        const deadline = Date.now() + 5_000;
+        while (!stopped && current() && Date.now() < deadline && capturedAnswerChars() < 120) {
+          await new Promise((resolve) => later(resolve, 200));
+          scan();
+        }
+        if (capturedAnswerChars() < 120) {
+          const latest = dom.latestUser?.();
+          globalThis.ChatCmdCaptureStatus?.report('transcript-empty-at-completion',
+            `bound=${bound}; userBound=${Boolean(userId)}; userMatches=${Boolean(latest && matchesSubmitted(dom, latest.text, submittedContent))}; `
+            + `answerChars=${capturedAnswerChars()}; `
+            + `${latest ? (dom.readDiagnostics?.(latest) || 'diagnostics=unavailable') : 'latestUser=missing'}`);
+        }
+      }
       if (completed && !complete) {
         complete = true; dirty = true; revision = Math.max(revision + 1, Date.now()); checkpoint();
       }
@@ -155,14 +193,69 @@
         else scheduleSend();
       });
     }
-    const observer = typeof MutationObserver === 'function' ? new MutationObserver(schedule) : null;
-    observer?.observe(document.body, { childList: true, characterData: true, subtree: true,
-      attributes: true, attributeFilter: ['data-message-id', 'data-turn-id', 'data-turn', 'data-interrupted', 'hidden', 'aria-hidden'] });
+    const observerOptions = { childList: true, characterData: true, subtree: true,
+      attributes: true, attributeFilter: ['class', 'role', 'aria-label', 'data-testid', 'data-message-id',
+        'data-message-author-role', 'data-turn-id', 'data-turn', 'data-interrupted', 'data-language',
+        'data-tool-call-id', 'hidden', 'aria-hidden'] };
+    const observedRoots = new WeakSet();
+    let observedShadowRootCount = 0;
+    let shadowDiscoveryTimer = null;
+    const observer = typeof MutationObserver === 'function' ? new MutationObserver((records) => {
+      let foundShadowRoot = false;
+      for (const record of records) {
+        for (const node of record.addedNodes || []) {
+          if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+            foundShadowRoot = discoverShadowRoots(node) || foundShadowRoot;
+          }
+        }
+      }
+      if (foundShadowRoot) reportObservedShadowRoots();
+      schedule();
+    }) : null;
+    function discoverShadowRoots(root) {
+      if (!observer || !root?.querySelectorAll) return false;
+      const elements = [];
+      if (root instanceof Element) elements.push(root);
+      elements.push(...root.querySelectorAll('*'));
+      let found = false;
+      for (const element of elements) {
+        if (!element.shadowRoot || observedRoots.has(element.shadowRoot)) continue;
+        observedRoots.add(element.shadowRoot);
+        observedShadowRootCount += 1;
+        observer.observe(element.shadowRoot, observerOptions);
+        found = true;
+        found = discoverShadowRoots(element.shadowRoot) || found;
+      }
+      return found;
+    }
+    function reportObservedShadowRoots() {
+      globalThis.ChatCmdCaptureStatus?.report('capture-shadow-roots-observed', `count=${observedShadowRootCount}`);
+    }
+    function discoverShadowRootsPeriodically() {
+      if (stopped || !observer) return;
+      shadowDiscoveryTimer = later(() => {
+        shadowDiscoveryTimer = null;
+        if (stopped) return;
+        if (discoverShadowRoots(document.documentElement)) reportObservedShadowRoots();
+        // Some ChatGPT layouts update rendered text without a mutation visible to
+        // this content script. Reconcile periodically for a bounded window after
+        // the last observed change; ordinary mutation events remain the fast path.
+        const capturedChars = messages.filter((message) => message.kind === 'answer')
+          .reduce((total, message) => total + (message.content?.length || 0), 0);
+        if (bound && capturedChars < 120 && Date.now() < fallbackRescanUntil) schedule();
+        discoverShadowRootsPeriodically();
+      }, 3000);
+    }
+    observer?.observe(document.documentElement, observerOptions);
+    discoverShadowRoots(document.documentElement);
+    reportObservedShadowRoots();
+    discoverShadowRootsPeriodically();
     function onPageHide(event) { if (!event.persisted) stop(); }
     window.addEventListener('pagehide', onPageHide);
     function stop() {
       if (stopped) return;
       stopped = true; observer?.disconnect(); if (timer !== null) cancel(timer);
+      if (shadowDiscoveryTimer !== null) cancel(shadowDiscoveryTimer);
       window.removeEventListener('pagehide', onPageHide);
     }
     function finish() {

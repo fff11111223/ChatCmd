@@ -43,8 +43,12 @@ pub(super) fn is_explicit_multi_agent_request(content: &str) -> bool {
         "không sử dụng nhiều agent",
         "do not split into agents",
         "do not try to split into agents",
+        "do not split an agent",
+        "do not try splitting an agent",
         "don't try to split into agents",
         "don't split into agents",
+        "don't split an agent",
+        "don't try splitting an agent",
         "do not use multiple agents",
         "don't use multiple agents",
         "without subagents",
@@ -66,6 +70,8 @@ pub(super) fn is_explicit_multi_agent_request(content: &str) -> bool {
     };
 
     starts_with_command("chia agent")
+        || starts_with_command("split an agent")
+        || starts_with_command("try splitting an agent")
         || ((starts_with_command("chia ra") || starts_with_command("tách ra"))
             && normalized.contains(" agent"))
         || starts_with_command("dùng nhiều agent")
@@ -73,6 +79,7 @@ pub(super) fn is_explicit_multi_agent_request(content: &str) -> bool {
         || starts_with_command("use multiple agents")
         || starts_with_command("use several agents")
         || starts_with_command("split into agents")
+        || (starts_with_command("split into") && normalized.contains(" agent"))
         || starts_with_command("split across agents")
         || [
             "hãy chia agent",
@@ -88,6 +95,12 @@ pub(super) fn is_explicit_multi_agent_request(content: &str) -> bool {
         ]
         .iter()
         .any(|phrase| normalized.contains(phrase))
+        || (normalized.contains("分別檢查")
+            && normalized.contains("前端")
+            && normalized.contains("後端"))
+        || (normalized.contains("分别检查")
+            && normalized.contains("前端")
+            && normalized.contains("后端"))
 }
 
 pub(super) fn intent_hint(content: &str) -> Value {
@@ -192,6 +205,9 @@ mod tests {
         ));
         assert!(is_explicit_multi_agent_request(
             "Use multiple agents to review this repo"
+        ));
+        assert!(is_explicit_multi_agent_request(
+            "分別檢查前端、後端及工具呼叫流程"
         ));
         assert!(!is_explicit_multi_agent_request(
             "Review the entire source code and subagents to find errors"

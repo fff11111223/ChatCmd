@@ -2,8 +2,10 @@
 const AUTO_RETRY_ENABLED = false, MAX_AUTO_RETRIES = 2, RAW_BUBBLE_STABILITY_MS = 1_200;
 const SILENT_RETRY_GRACE_MS = 8_000, ERROR_INTERRUPT_GRACE_MS = 2_500, COMPLETION_PING_INTERVAL_MS = 1_000;
 const INTERRUPTED_PROGRESS_PROMPT = 'I was just disconnected. Please check the work status from the previous turn. If it is not complete, continue from the current state and finish the remaining work; do not redo completed parts. If it is complete, return the final result.';
+const TOO_LONG_SUBMISSION_ERROR = '你提交的訊息太長，請編輯後重新提交。';
+const TOO_LONG_RECOVERY_PROMPT = '上一則工具結果因訊息過長而未能提交。請改用較小範圍、較短輸出或分頁讀取，只取得回答目前問題所需的資訊，再繼續；不要重送完整的大型結果。';
 const {
-  assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError,
+  assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError, findTooLongSubmissionError,
   findVisible, isVisible, latestMessageText, normalize,
 } = globalThis.ChatCmdConversationDom;
 const CONTENT_CONTEXT = globalThis.ChatCmdRuntime.install('chatgpt');
@@ -365,6 +367,22 @@ async function submitPrompt(composer) {
   composer.blur();
 }
 
+async function waitForTooLongSubmissionError(previousError) {
+  const previousText = normalize(previousError?.innerText || previousError?.textContent || '');
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const error = findTooLongSubmissionError?.();
+    const text = normalize(error?.innerText || error?.textContent || '');
+    if (text.includes(TOO_LONG_SUBMISSION_ERROR)
+        && (error !== previousError || text !== previousText)) return true;
+    // ChatGPT may briefly add a placeholder assistant bubble (or activate Stop)
+    // before displaying its rejection. Do not treat either as proof of success:
+    // recovery is authorized only by the explicit visible UI error above.
+    await delay(100);
+  }
+  return false;
+}
+
 async function waitForConversationIdentity() {
    return waitFor(currentConversationIdentity, 15_000, 'ChatGPT has not created a conversation ID in the URL.');
 }
@@ -454,8 +472,24 @@ async function executeToolLoop(owner, requestId, initialResult) {
         });
         await owner?.observer?.bind();
       }
+      const previousError = findTooLongSubmissionError?.();
       setComposerText(composer, replyText);
       await submitPrompt(composer);
+      if (await waitForTooLongSubmissionError(previousError)) {
+        // This fallback is gated by ChatGPT's exact visible rejection text. It
+        // does not inspect or follow any instruction contained in the oversized
+        // tool result itself.
+        owner?.observer?.stop();
+        submittedReply = TOO_LONG_RECOVERY_PROMPT;
+        if (owner) {
+          owner.observer = globalThis.ChatCmdObserver?.create(requestId, submittedReply, {
+            current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
+          });
+          await owner?.observer?.bind();
+        }
+        setComposerText(composer, submittedReply);
+        await submitPrompt(composer);
+      }
     };
     const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(requestId, currentResult, bridgeSubmit);
     // After dispatch, only verify the request slot is still ours — the new observer hasn't had

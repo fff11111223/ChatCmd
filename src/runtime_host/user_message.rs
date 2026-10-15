@@ -41,48 +41,6 @@ impl RuntimeHost {
         }
     }
 
-    pub(super) async fn subagent_delegation_explicitly_requested(
-        &self,
-        context: &OperationContext,
-    ) -> RuntimeResult<bool> {
-        let task_id = required_task_id(context)?;
-        let turn_id = required_turn_id(context)?;
-        let root = sqlx::query_as::<_, (String, String)>(
-            r#"WITH RECURSIVE ancestors(parent_task_id,parent_turn_id,child_task_id,depth) AS (
-                SELECT parent_task_id,parent_turn_id,child_task_id,1 FROM subagent_runs WHERE child_task_id=?
-                UNION ALL
-                SELECT r.parent_task_id,r.parent_turn_id,r.child_task_id,ancestors.depth+1
-                FROM subagent_runs r JOIN ancestors ON r.child_task_id=ancestors.parent_task_id
-                WHERE ancestors.depth<32
-            )
-            SELECT parent_task_id,parent_turn_id FROM ancestors ORDER BY depth DESC LIMIT 1"#,
-        )
-        .bind(task_id.as_str())
-        .fetch_optional(self.repository.pool())
-        .await
-        .map_err(|_| RuntimeError::new("storage_error", "sub-agent root intent lookup failed"))?;
-        let (root_task_id, root_turn_id) =
-            root.unwrap_or_else(|| (task_id.as_str().to_owned(), turn_id.as_str().to_owned()));
-        let payload = sqlx::query_scalar::<_, String>(
-            "SELECT payload_json FROM timeline_events WHERE task_id=? AND turn_id=? AND actor='user' AND kind='message' ORDER BY created_at_ms,event_id LIMIT 1",
-        )
-        .bind(&root_task_id)
-        .bind(&root_turn_id)
-        .fetch_optional(self.repository.pool())
-        .await
-        .map_err(|_| RuntimeError::new("storage_error", "sub-agent root user message unavailable"))?;
-        let content = payload
-            .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
-            .and_then(|payload| {
-                payload
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default();
-        Ok(is_explicit_multi_agent_request(&content))
-    }
-
     pub(super) async fn task_user_path_scopes(
         &self,
         context: &OperationContext,
@@ -276,7 +234,10 @@ impl RuntimeHost {
                 payload,
             );
         }
-        let project_folders = self.task_project_folders(Some(task_id.as_str())).await.unwrap_or_default();
+        let project_folders = self
+            .task_project_folders(Some(task_id.as_str()))
+            .await
+            .unwrap_or_default();
         let project_folder = project_folders
             .first()
             .map(|p| p.to_string_lossy().into_owned());
@@ -321,13 +282,14 @@ impl RuntimeHost {
                 },
                 "enabled": subagent_limit > 0,
                 "maxConcurrent": subagent_limit,
+                "maxPerRootTurn": super::subagent_concurrency::MAX_SUBAGENTS_PER_ROOT_TURN,
                 "explicitUserIntent": explicit_subagent_intent,
                 "instruction": if subagent_limit == 0 {
                     "Sub-agents are disabled by the user. Do not call agent_subagent_start or delegate to any child; perform the work in this conversation."
                 } else if explicit_subagent_intent {
-                    "The current root user turn explicitly requested multi-agent work. Use registered children only for that requested delegation scope; all descendants remain attached to the root turn."
+                    "The current root user turn explicitly requested multi-agent work. Keep delegation within that requested scope; all descendants remain attached to the root turn and subject to the same limits and permissions."
                 } else {
-                    "The current root user turn did not explicitly request multi-agent delegation. Do not call agent_subagent_start or open a child conversation; continue in this conversation."
+                    "The current root user turn did not explicitly request delegation; this is informational and does not prohibit it. Decide whether parallel independent work materially helps. Do not delegate simple or sequential tasks. The backend enforces maxConcurrent, maxPerRootTurn, and normal permissions; if a limit is reached, continue locally."
                 }
             },
             "planMode": is_plan_mode_request(content),

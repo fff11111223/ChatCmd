@@ -25,77 +25,100 @@ impl RuntimeHost {
             approval_grant_json.as_deref(),
         );
         let deterministic_task_id = child_task_id_for_subagent(&deterministic_id);
-        // A disabled setting is a policy decision, not a queue with zero capacity.
-        // Check retries before counting slots: the existing child may own the last one.
-        let _slot_guard = loop {
-            if context.cancellation.is_cancelled() {
-                return Err(RuntimeError::new(
-                    "operationCancelled",
-                    "sub-agent registration cancelled",
-                ));
-            }
-            let guard = self.subagent_registration_gate.lock().await;
-            let limit = self.subagent_concurrency_limit().await?;
-            if limit == 0 {
-                return Err(RuntimeError::new(
-                    "subagents_disabled",
-                    "Sub-agents are disabled (Settings > Execution > Sub-agent count = 0). Continue in the main conversation.",
-                ));
-            }
-            if let Some(row) =
-                sqlx::query("SELECT id,child_task_id,status FROM subagent_runs WHERE id=?")
-                    .bind(&deterministic_id)
-                    .fetch_optional(self.repository.pool())
-                    .await
-                    .map_err(|_| {
-                        RuntimeError::new("storage_error", "sub-agent retry lookup failed")
-                    })?
-            {
-                return Ok(subagent_registration_value(
-                    &deterministic_id,
-                    &row.get::<Option<String>, _>("child_task_id")
-                        .unwrap_or_else(|| deterministic_task_id.clone()),
-                    name,
-                    &row.get::<String, _>("status"),
-                    true,
-                ));
-            }
-            let parent_status =
-                sqlx::query_scalar::<_, String>("SELECT status FROM tasks WHERE id=?")
-                    .bind(parent_task_id)
-                    .fetch_optional(self.repository.pool())
-                    .await
-                    .map_err(|_| {
-                        RuntimeError::new("storage_error", "sub-agent parent lookup failed")
-                    })?;
-            if !matches!(parent_status.as_deref(), Some("running" | "pending")) {
-                return Err(RuntimeError::new(
-                    "subagent_parent_inactive",
-                    "cannot delegate from a finished or stopped parent task",
-                ));
-            }
-            let nested: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM subagent_runs WHERE child_task_id=?)",
-            )
+        if context.cancellation.is_cancelled() {
+            return Err(RuntimeError::new(
+                "operationCancelled",
+                "sub-agent registration cancelled",
+            ));
+        }
+        // Serialize reservations so parallel callers cannot pass the same capacity check.
+        let _slot_guard = self.subagent_registration_gate.lock().await;
+        if context.cancellation.is_cancelled() {
+            return Err(RuntimeError::new(
+                "operationCancelled",
+                "sub-agent registration cancelled",
+            ));
+        }
+        let limit = self.subagent_concurrency_limit().await?;
+        if limit == 0 {
+            return Err(RuntimeError::new(
+                "subagents_disabled",
+                "Sub-agents are disabled (Settings > Execution > Sub-agent count = 0). Continue in the main conversation.",
+            ));
+        }
+        // Retries reuse their existing slot even if the limit has since been reached.
+        if let Some(row) =
+            sqlx::query("SELECT id,child_task_id,status FROM subagent_runs WHERE id=?")
+                .bind(&deterministic_id)
+                .fetch_optional(self.repository.pool())
+                .await
+                .map_err(|_| RuntimeError::new("storage_error", "sub-agent retry lookup failed"))?
+        {
+            return Ok(subagent_registration_value(
+                &deterministic_id,
+                &row.get::<Option<String>, _>("child_task_id")
+                    .unwrap_or_else(|| deterministic_task_id.clone()),
+                name,
+                &row.get::<String, _>("status"),
+                true,
+            ));
+        }
+        let parent_status = sqlx::query_scalar::<_, String>("SELECT status FROM tasks WHERE id=?")
             .bind(parent_task_id)
-            .fetch_one(self.repository.pool())
+            .fetch_optional(self.repository.pool())
             .await
-            .map_err(|_| {
-                RuntimeError::new("storage_error", "sub-agent parent relation unavailable")
-            })?;
-            let active = self.active_subagent_count().await?;
-            if active < limit {
-                break guard;
-            }
-            if nested {
-                return Err(RuntimeError::new(
-                    "subagent_capacity_exhausted",
-                    "All global child slots are occupied. Do this delegated work locally; waiting for another child could deadlock the parent tree.",
-                ));
-            }
-            drop(guard);
-            self.wait_before_retrying_subagent_slot().await;
-        };
+            .map_err(|_| RuntimeError::new("storage_error", "sub-agent parent lookup failed"))?;
+        if !matches!(parent_status.as_deref(), Some("running" | "pending")) {
+            return Err(RuntimeError::new(
+                "subagent_parent_inactive",
+                "cannot delegate from a finished or stopped parent task",
+            ));
+        }
+
+        let root = sqlx::query_as::<_, (String, String)>(
+            r#"WITH RECURSIVE ancestors(parent_task_id,parent_turn_id,child_task_id,depth) AS (
+                SELECT parent_task_id,parent_turn_id,child_task_id,1 FROM subagent_runs WHERE child_task_id=?
+                UNION ALL
+                SELECT r.parent_task_id,r.parent_turn_id,r.child_task_id,ancestors.depth+1
+                FROM subagent_runs r JOIN ancestors ON r.child_task_id=ancestors.parent_task_id
+                WHERE ancestors.depth<32
+            )
+            SELECT parent_task_id,parent_turn_id FROM ancestors ORDER BY depth DESC LIMIT 1"#,
+        )
+        .bind(parent_task_id)
+        .fetch_optional(self.repository.pool())
+        .await
+        .map_err(|_| RuntimeError::new("storage_error", "sub-agent root turn lookup failed"))?;
+        let (root_task_id, root_turn_id) =
+            root.unwrap_or_else(|| (parent_task_id.to_owned(), parent_turn_id.to_owned()));
+        let total_in_root_turn: i64 = sqlx::query_scalar(
+            r#"WITH RECURSIVE descendants(child_task_id,depth) AS (
+                SELECT child_task_id,1 FROM subagent_runs WHERE parent_task_id=? AND parent_turn_id=?
+                UNION ALL
+                SELECT run.child_task_id,descendants.depth+1
+                FROM subagent_runs run JOIN descendants ON run.parent_task_id=descendants.child_task_id
+                WHERE descendants.depth<32
+            ) SELECT COUNT(*) FROM descendants"#,
+        )
+        .bind(&root_task_id)
+        .bind(&root_turn_id)
+        .fetch_one(self.repository.pool())
+        .await
+        .map_err(|_| RuntimeError::new("storage_error", "sub-agent root turn quota unavailable"))?;
+        if total_in_root_turn >= super::super::subagent_concurrency::MAX_SUBAGENTS_PER_ROOT_TURN {
+            return Err(RuntimeError::new(
+                "subagent_tree_limit_reached",
+                "The root user turn has reached its maximum number of child agents. Continue the remaining work locally.",
+            ));
+        }
+
+        let active = self.active_subagent_count().await?;
+        if active >= limit {
+            return Err(RuntimeError::new(
+                "subagent_capacity_exhausted",
+                "All global child slots are occupied. Continue this work locally or wait for an active child to finish.",
+            ));
+        }
         let now = now_ms();
         let mut transaction = self
             .repository

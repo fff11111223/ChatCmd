@@ -1,6 +1,6 @@
 use std::{
     path::{Component, Path},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 mod artifact_tools;
@@ -8,6 +8,7 @@ mod command_tools;
 mod filesystem_tools;
 mod helpers;
 mod path_scopes;
+mod shell_actions;
 mod shell_handoff;
 mod tool_authorization;
 
@@ -17,7 +18,7 @@ use chatcmd_core::{
 use chatcmd_mcp::RuntimeApi as _;
 use chatcmd_runtime::{
     CommandOutput, FsConflictPolicy, FsTransferRequest, OperationContext, RuntimeError,
-    RuntimeResult, ShellCreateRequest, ShellWriteRequest, ToolUsage,
+    RuntimeResult, ToolUsage,
 };
 use serde_json::{Value, json};
 
@@ -44,7 +45,9 @@ impl RuntimeHost {
             || tool == "project_context"
             || matches!(tool, "skills_list" | "skill_read")
         {
-            let folders = self.task_project_folders(context.task_id.as_deref()).await?;
+            let folders = self
+                .task_project_folders(context.task_id.as_deref())
+                .await?;
             let primary = folders.first().cloned();
             (primary, folders)
         } else {
@@ -63,13 +66,21 @@ impl RuntimeHost {
                 if !all_project_folders.is_empty() {
                     let canonical_project_dirs: Vec<std::path::PathBuf> = all_project_folders
                         .iter()
-                        .map(|f| super::safety_filter::strip_verbatim_prefix(&f.canonicalize().unwrap_or_else(|_| f.clone())))
+                        .map(|f| {
+                            super::safety_filter::strip_verbatim_prefix(
+                                &f.canonicalize().unwrap_or_else(|_| f.clone()),
+                            )
+                        })
                         .collect();
                     raw_scopes
                         .into_iter()
                         .filter(|p| {
-                            let p_canon = super::safety_filter::strip_verbatim_prefix(&p.canonicalize().unwrap_or_else(|_| p.clone()));
-                            canonical_project_dirs.iter().any(|cf| super::safety_filter::is_subpath(&p_canon, cf))
+                            let p_canon = super::safety_filter::strip_verbatim_prefix(
+                                &p.canonicalize().unwrap_or_else(|_| p.clone()),
+                            );
+                            canonical_project_dirs
+                                .iter()
+                                .any(|cf| super::safety_filter::is_subpath(&p_canon, cf))
                         })
                         .collect()
                 } else {
@@ -106,10 +117,18 @@ impl RuntimeHost {
                     // Sandbox on: only allow scopes that are inside any project folder.
                     let canonical_project_dirs: Vec<std::path::PathBuf> = all_project_folders
                         .iter()
-                        .map(|f| super::safety_filter::strip_verbatim_prefix(&f.canonicalize().unwrap_or_else(|_| f.clone())))
+                        .map(|f| {
+                            super::safety_filter::strip_verbatim_prefix(
+                                &f.canonicalize().unwrap_or_else(|_| f.clone()),
+                            )
+                        })
                         .collect();
-                    let scope_canon = super::safety_filter::strip_verbatim_prefix(&scope.canonicalize().unwrap_or_else(|_| scope.clone()));
-                    canonical_project_dirs.iter().any(|cf| super::safety_filter::is_subpath(&scope_canon, cf))
+                    let scope_canon = super::safety_filter::strip_verbatim_prefix(
+                        &scope.canonicalize().unwrap_or_else(|_| scope.clone()),
+                    );
+                    canonical_project_dirs
+                        .iter()
+                        .any(|cf| super::safety_filter::is_subpath(&scope_canon, cf))
                 } else {
                     // Sandbox off: allow any scope (original behaviour).
                     true
@@ -152,50 +171,13 @@ impl RuntimeHost {
             }
             "shell_create" => {
                 let input: ShellCreate = parse(arguments)?;
-                self.retire_idle_current_turn_terminals(&context).await?;
-                let working_directory = match input.working_directory {
-                    Some(value) if value.is_absolute() => value,
-                    Some(value) => project_folder
-                        .as_ref()
-                        .map(|folder| folder.join(value))
-                        .ok_or_else(project_folder_required_for_shell)?,
-                    None => project_folder
-                        .clone()
-                        .ok_or_else(project_folder_required_for_shell)?,
-                };
-                let mut shell_scopes = task_path_scopes.clone();
-                if let Some(scope) = path_scopes::scope_for_path(&working_directory) {
-                    // Only add working_directory as a scope if it's already within an allowed scope,
-                    // or if there is no project_folder (sandbox off). This mirrors the fix in
-                    // command_tools.rs — adding any absolute path unconditionally is a bypass vector.
-                    let already_covered = shell_scopes.iter().any(|s| scope.starts_with(s));
-                    if already_covered || project_folder.is_none() {
-                        shell_scopes.push(scope);
-                        shell_scopes.sort();
-                        shell_scopes.dedup();
-                    }
-                }
-                self.enable_shell_file_watcher(&context);
-                let info = self
-                    .shell
-                    .create_with_additional_scopes(
-                        &context,
-                        ShellCreateRequest {
-                            request_id: context.request_id.clone(),
-                            working_directory: Some(working_directory),
-                            executable: input.executable,
-                            arguments: input.arguments,
-                            environment: input.environment,
-                            columns: input.columns,
-                            rows: input.rows,
-                        },
-                        &shell_scopes,
-                    )
-                    .await?;
-                self.persist_shell_session(&context, &info).await?;
-                self.publish_terminal_opened(&context, &info);
-                self.spawn_terminal_live_bridge(&context, &info);
-                value(info)
+                self.dispatch_shell_create(
+                    &context,
+                    input,
+                    project_folder.as_deref(),
+                    &task_path_scopes,
+                )
+                .await
             }
             "command_run" => {
                 self.dispatch_command_run(
@@ -208,37 +190,11 @@ impl RuntimeHost {
             }
             "shell_write" => {
                 let input: ShellWrite = parse(arguments)?;
-                let written = self
-                    .shell
-                    .write(
-                        &context,
-                        ShellWriteRequest {
-                            request_id: context.request_id.clone(),
-                            session_id: input.session_id,
-                            text: input.text,
-                            append_new_line: input.append_new_line,
-                            input_kind: input.input_kind,
-                            sensitive: input.sensitive,
-                        },
-                    )
-                    .await?;
-                Ok(json!({ "writtenBytes": written }))
+                self.dispatch_shell_write(&context, input).await
             }
             "shell_wait" => {
                 let input: ShellWait = parse(arguments)?;
-                let (result, usage) = self
-                    .wait_for_shell_handoff(
-                        &context,
-                        &input.session_id,
-                        Duration::from_millis(input.timeout_ms.clamp(1, 300_000)),
-                        input.allow_user_input,
-                    )
-                    .await?;
-                if result.completed {
-                    self.update_session_status(&input.session_id, "exited", result.exit_code)
-                        .await?;
-                }
-                value_with_usage(result, usage)
+                self.dispatch_shell_wait(&context, input).await
             }
             "shell_read" => {
                 let input: ShellRead = parse(arguments)?;
@@ -256,32 +212,20 @@ impl RuntimeHost {
             }
             "shell_signal" => {
                 let input: ShellSignalInput = parse(arguments)?;
-                self.shell
-                    .signal(&context, &input.session_id, input.signal)
-                    .await?;
-                Ok(json!({ "accepted": true }))
+                self.dispatch_shell_signal(&context, input).await
             }
             "shell_resize" => {
                 let input: ShellResize = parse(arguments)?;
-                value(
-                    self.shell
-                        .resize_with_context(&context, &input.session_id, input.columns, input.rows)
-                        .await?,
-                )
+                self.dispatch_shell_resize(&context, input).await
             }
             "shell_close" => {
                 let input: ShellClose = parse(arguments)?;
-                self.shell
-                    .close(&context, &input.session_id, input.force)
-                    .await?;
-                self.update_session_status(&input.session_id, "closed", None)
-                    .await?;
-                Ok(json!({ "closed": true }))
+                self.dispatch_shell_close(&context, input).await
             }
-            "shell_list" => value(self.shell.list().await?),
+            "shell_list" => self.dispatch_shell_list().await,
             "shell_inspect" => {
                 let input: SessionInput = parse(arguments)?;
-                value(self.shell.inspect(&input.session_id).await?)
+                self.dispatch_shell_inspect(input).await
             }
             "workspace_roots" => {
                 if !all_project_folders.is_empty() {
@@ -289,7 +233,7 @@ impl RuntimeHost {
                 } else {
                     value(task_path_scopes)
                 }
-            },
+            }
             "project_context" => {
                 let input: ProjectContextInput = parse(arguments)?;
                 let folder = project_folder.ok_or_else(|| {
@@ -526,15 +470,6 @@ impl RuntimeHost {
                 .await
             }
             "agent_subagent_start" => {
-                if !self
-                    .subagent_delegation_explicitly_requested(&context)
-                    .await?
-                {
-                    return Err(RuntimeError::new(
-                        "subagent_explicit_user_intent_required",
-                        "The current root user turn did not explicitly request multi-agent delegation. Continue in the current conversation instead of opening a child.",
-                    ));
-                }
                 let input: SubagentStartInput = parse(arguments)?;
                 super::subagent_contract::validate_delegation_contract(&input)?;
                 self.register_subagent(

@@ -112,6 +112,32 @@ async fn nested_full_capacity_fails_fast_instead_of_deadlocking_its_parent() {
 }
 
 #[tokio::test]
+async fn subagent_tree_creation_is_bounded_per_root_turn() {
+    let (host, context, _directory) = parent_fixture().await;
+    for index in 0..20 {
+        let registration = host
+            .register_subagent(
+                &context,
+                &format!("Child {index}"),
+                &format!("Independent bounded work item {index}"),
+                None,
+            )
+            .await
+            .expect("child within root-turn quota should register");
+        sqlx::query("UPDATE subagent_runs SET status='completed' WHERE id=?")
+            .bind(registration["subagentId"].as_str().expect("subagent id"))
+            .execute(host.repository.pool())
+            .await
+            .expect("release active slot while retaining quota usage");
+    }
+    let error = host
+        .register_subagent(&context, "Child 20", "One beyond the root-turn quota", None)
+        .await
+        .expect_err("the root-turn quota must reject the 21st child");
+    assert_eq!(error.code, "subagent_tree_limit_reached");
+}
+
+#[tokio::test]
 async fn renewed_lease_wins_against_a_watchdog_using_an_old_snapshot() {
     let (host, context, registration, id, _dir) = fallback_fixture().await;
     let child = claim_registered(&host, &context, &registration, &id).await;

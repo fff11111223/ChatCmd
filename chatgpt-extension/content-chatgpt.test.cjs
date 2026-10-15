@@ -260,6 +260,70 @@ test('a stop-like button outside the unified composer does not mark ChatGPT as g
   assert.equal(vm.runInContext('ChatCmdConversationDom.findStopButton()', context), null);
 });
 
+test('send detection never guesses that an unlabeled add-tools button is the send control', () => {
+  class FakeElement {
+    constructor(attributes = {}) { this.attributes = attributes; this.disabled = false; }
+    getAttribute(name) { return this.attributes[name] || null; }
+    getBoundingClientRect() { return { width: 20, height: 20 }; }
+    compareDocumentPosition() { return 4; }
+    closest() { return this.scope; }
+    querySelectorAll(selector) {
+      if (selector === 'button') return [this.addToolsButton];
+      return [];
+    }
+  }
+  const addToolsButton = new FakeElement({ 'aria-label': 'Open tools and connectors' });
+  const scope = new FakeElement();
+  scope.addToolsButton = addToolsButton;
+  const composer = new FakeElement();
+  composer.scope = scope;
+  const context = {
+    Element: FakeElement,
+    getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
+    document: { querySelectorAll: () => [] },
+  };
+  vm.createContext(context);
+  vm.runInContext(domSource, context, { filename: 'content-chatgpt-dom.js' });
+  context.__composer = composer;
+  context.__addToolsButton = addToolsButton;
+  assert.equal(
+    vm.runInContext('ChatCmdConversationDom.findSendButton(globalThis.__composer)', context),
+    null,
+  );
+});
+
+test('send detection prefers the explicit composer send button when tools are present', () => {
+  class FakeElement {
+    constructor(attributes = {}) { this.attributes = attributes; this.disabled = false; }
+    getAttribute(name) { return this.attributes[name] || null; }
+    getBoundingClientRect() { return { width: 20, height: 20 }; }
+    closest() { return this.scope; }
+    querySelectorAll(selector) {
+      if (selector === 'button[data-testid="send-button"]') return [this.sendButton];
+      if (selector === 'button') return [this.addToolsButton, this.sendButton];
+      return [];
+    }
+  }
+  const scope = new FakeElement();
+  scope.addToolsButton = new FakeElement({ 'aria-label': 'Open tools and connectors' });
+  scope.sendButton = new FakeElement({ 'data-testid': 'send-button' });
+  const composer = new FakeElement();
+  composer.scope = scope;
+  const context = {
+    Element: FakeElement,
+    getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
+    document: { querySelectorAll: () => [] },
+  };
+  vm.createContext(context);
+  vm.runInContext(domSource, context, { filename: 'content-chatgpt-dom.js' });
+  context.__composer = composer;
+  context.__sendButton = scope.sendButton;
+  assert.equal(
+    vm.runInContext('ChatCmdConversationDom.findSendButton(globalThis.__composer) === globalThis.__sendButton', context),
+    true,
+  );
+});
+
 test('content scripts load helpers before the request runner', () => {
   const entry = manifest.content_scripts.find((item) => item.matches.includes('https://chatgpt.com/*'));
   assert.deepEqual(entry.js, ['content-runtime.js', 'content-chatgpt-clock.js', 'content-chatgpt-render.js', 'content-chatgpt-ui.js', 'content-chatgpt-dom.js', 'content-chatgpt-transcript.js', 'content-chatgpt-observer.js', 'content-chatgpt-approval-ui.js', 'content-chatgpt-monitor.js', 'content-chatgpt-tool-bridge.js', 'content-chatgpt.js', 'compact-protocol.js', 'content-chatgpt-compact.js', 'content-chatgpt-resume.js', 'content-chatgpt-native.js']);

@@ -1,15 +1,12 @@
-use std::time::Duration;
-
 use chatcmd_core::SettingsStore as _;
 use chatcmd_runtime::{RuntimeError, RuntimeResult};
-use tokio::time::sleep;
 
 use super::RuntimeHost;
 
 pub(super) const DEFAULT_SUBAGENT_CONCURRENCY: i64 = 0;
 pub(super) const MIN_SUBAGENT_CONCURRENCY: i64 = 0;
 pub(super) const MAX_SUBAGENT_CONCURRENCY: i64 = 5;
-const SLOT_RECHECK_DELAY: Duration = Duration::from_millis(100);
+pub(super) const MAX_SUBAGENTS_PER_ROOT_TURN: i64 = 20;
 
 impl RuntimeHost {
     pub(super) async fn subagent_concurrency_limit(&self) -> RuntimeResult<i64> {
@@ -40,9 +37,5 @@ impl RuntimeHost {
         .fetch_one(self.repository.pool())
         .await
         .map_err(|_| RuntimeError::new("storage_error", "active sub-agent count unavailable"))
-    }
-
-    pub(super) async fn wait_before_retrying_subagent_slot(&self) {
-        sleep(SLOT_RECHECK_DELAY).await;
     }
 }

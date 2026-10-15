@@ -80,6 +80,34 @@
   }
 
   /**
+   * Tool results are opaque data. Their JSON `content` may itself contain
+   * examples labelled `chatcmd_tool_call`; those examples must never be
+   * interpreted as executable calls. Blank complete result fences before any
+   * call-pattern scan so every parser path (including inline labels and the
+   * generic fallback) observes the same boundary.
+   */
+  function maskToolResultBlocks(text) {
+    const chars = text.split('');
+    const opener = /(^|\n)([ \t]*)(`{3,})[ \t]*(chatcmd_tool_result)\b[^\n]*\n/gi;
+    let match;
+    while ((match = opener.exec(text)) !== null) {
+      const fence = match[3];
+      const bodyStart = opener.lastIndex;
+      const closePattern = new RegExp(`(?:^|\\n)[ \\t]*${'`'.repeat(fence.length)}[ \\t]*(?=\\n|$)`, 'g');
+      closePattern.lastIndex = bodyStart;
+      const close = closePattern.exec(text);
+      if (!close) continue;
+      const start = match.index + match[1].length;
+      const end = close.index + close[0].length;
+      for (let i = start; i < end; i++) {
+        if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+      }
+      opener.lastIndex = end;
+    }
+    return chars.join('');
+  }
+
+  /**
    * Extract all tool-call descriptors from `text`.
    * Matches ```chatcmd_tool_call ... ``` or [[CHATCMD_TOOL_CALL:{...}]]
    * or raw JSON containing "tool" and "id" when wrapped in code blocks.
@@ -87,6 +115,7 @@
    */
   function parseToolCalls(text) {
     if (!text || typeof text !== 'string') return [];
+    text = maskToolResultBlocks(text);
     const calls = [];
     const seen = new Set();
 
@@ -344,18 +373,12 @@
       }
     }
 
-    // Compute next_id from the max numeric suffix seen in all call IDs in text.
+    // Compute next_id only from parsed call envelopes. IDs inside tool results,
+    // quoted examples, or ordinary prose are data rather than dispatched calls.
     let nextId = null;
     try {
-      const idPattern = /\bcall_(\d+)\b/g;
       let maxNum = -1;
-      let m;
-      while ((m = idPattern.exec(text)) !== null) {
-        const n = parseInt(m[1], 10);
-        if (n > maxNum) maxNum = n;
-      }
-      // Also check call IDs from results.
-      for (const call of calls) {
+      for (const call of allParsed) {
         const dm = call.id.match(/^call_(\d+)$/);
         if (dm) {
           const n = parseInt(dm[1], 10);

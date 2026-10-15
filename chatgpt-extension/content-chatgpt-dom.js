@@ -21,6 +21,29 @@
     return null;
   }
 
+  function queryAllIncludingShadow(selector, root = document) {
+    const found = [...root.querySelectorAll(selector)];
+    for (const element of root.querySelectorAll('*')) {
+      if (element.shadowRoot) found.push(...queryAllIncludingShadow(selector, element.shadowRoot));
+    }
+    return [...new Set(found)];
+  }
+
+  function appearsAfter(left, right) {
+    if (!left || !right) return true;
+    const relation = left.compareDocumentPosition(right);
+    if (!(relation & Node.DOCUMENT_POSITION_DISCONNECTED)) {
+      return Boolean(relation & Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    // compareDocumentPosition reports nodes in open Shadow DOM as disconnected.
+    // Their rendered viewport positions still provide a useful chronological
+    // check for an error bubble below the submitted message.
+    const leftRect = left.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    return rightRect.top > leftRect.top
+      || (rightRect.top === leftRect.top && rightRect.left >= leftRect.right);
+  }
+
   function assistantNodes() {
     const isUiText = (node) => globalThis.ChatCmdTranscript?.isNonAnswerUiText?.(node?.innerText || node?.textContent || '') || false;
     const semantic = [...document.querySelectorAll('[data-message-author-role="assistant"]')]
@@ -45,19 +68,30 @@
     const latestUser = globalThis.ChatCmdTranscript?.latestUser?.()?.node
       || [...document.querySelectorAll('[data-message-author-role="user"]')].filter(isVisible).at(-1);
     const latestAssistant = assistantNodes().at(-1);
-    const candidates = [...document.querySelectorAll([
+    const candidates = queryAllIncludingShadow([
       'button[data-testid="regenerate-thread-error-button"]',
       '[class*="text-token-text-error"]',
       '[class*="bg-token-surface-error"]',
       '[class*="border-token-surface-error"]',
-    ].join(','))].filter(isVisible);
+    ].join(',')).filter(isVisible);
     return candidates.reverse().find((element) => {
-      const afterLatestUser = !latestUser || Boolean(latestUser.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const afterLatestUser = appearsAfter(latestUser, element);
       if (!afterLatestUser) return false;
       if (!latestAssistant) return true;
-      const assistantAfterError = Boolean(element.compareDocumentPosition(latestAssistant) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const assistantAfterError = appearsAfter(element, latestAssistant);
       return !assistantAfterError;
     }) || null;
+  }
+
+  function findTooLongSubmissionError() {
+    const phrase = '你提交的訊息太長，請編輯後重新提交。';
+    const candidates = queryAllIncludingShadow([
+      '[role="alert"]', '[data-testid*="thread-error" i]',
+      '[class*="text-token-text-error"]', '[class*="bg-token-surface-error"]',
+      '[class*="border-token-surface-error"]',
+    ].join(',')).filter((element) => isVisible(element)
+      && normalize(element.innerText || element.textContent).includes(normalize(phrase)));
+    return candidates.at(-1) || null;
   }
 
   function findStopButton() {
@@ -93,18 +127,11 @@
     const scope = composer?.closest('form,[data-type="unified-composer"],[data-testid*="composer" i]') || document;
     const exact = findVisibleWithin(scope, selectors);
     if (exact) return exact;
-    const submit = [...scope.querySelectorAll('button[type="submit"]')].find((button) => isVisible(button)
-      && !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+    const submit = [...scope.querySelectorAll('button[type="submit"]')].find(isVisible);
     if (submit) return submit;
-    if (!composer || scope === document) return null;
-    const ignored = /stop|voice|microphone|dictat|attach|upload|search|model|menu|停止|語音|麥克風|附件|上傳|搜尋|選擇|聆聽/i;
-    const afterComposer = [...scope.querySelectorAll('button')].filter((button) => {
-      if (!isVisible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
-      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`;
-      return !ignored.test(label)
-        && Boolean(composer.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING);
-    });
-    return afterComposer.at(-1) || null;
+    // Fail closed: an unlabeled control after the composer may be the add-tools (+)
+    // button. Never guess which control submits the message based on DOM order.
+    return null;
   }
 
   globalThis.ChatCmdConversationDom = Object.freeze({
@@ -113,6 +140,7 @@
     findSendButton,
     findStopButton,
     findThreadError,
+    findTooLongSubmissionError,
     findVisible,
     isVisible,
     latestMessageText,
