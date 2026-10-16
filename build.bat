@@ -18,7 +18,8 @@ echo ========================================
 echo Building ChatCmd Web Frontend
 echo ========================================
 
-cd /d C:\chatcmd\web
+#cd /d D:\frank\gemini\ChatCmd\web
+cd /d "%~dp0web"
 if errorlevel 1 goto :FAILED
 
 call npm.cmd run build
@@ -29,7 +30,8 @@ echo ========================================
 echo Building ChatCmd Release
 echo ========================================
 
-cd /d C:\chatcmd
+#cd /d D:\frank\gemini\ChatCmd
+cd /d "%~dp0"
 if errorlevel 1 goto :FAILED
 
 cargo build --release

@@ -83,15 +83,39 @@
     }) || null;
   }
 
+  function isTooLongText(text) {
+    const s = normalize(text);
+    return s.includes('你提交的訊息太長')
+      || s.includes('訊息太長')
+      || s.includes('message you submitted was too long')
+      || s.includes('message is too long')
+      || s.includes('message too long');
+  }
+
   function findTooLongSubmissionError() {
-    const phrase = '你提交的訊息太長，請編輯後重新提交。';
-    const candidates = queryAllIncludingShadow([
-      '[role="alert"]', '[data-testid*="thread-error" i]',
-      '[class*="text-token-text-error"]', '[class*="bg-token-surface-error"]',
+    const candidateSelectors = [
+      '[role="alert"]',
+      '[data-testid*="thread-error" i]',
+      '[data-testid*="error" i]',
+      '[class*="text-token-text-error"]',
+      '[class*="bg-token-surface-error"]',
       '[class*="border-token-surface-error"]',
-    ].join(',')).filter((element) => isVisible(element)
-      && normalize(element.innerText || element.textContent).includes(normalize(phrase)));
-    return candidates.at(-1) || null;
+      '[class*="text-red" i]',
+      '[class*="error" i]',
+    ].join(',');
+    const candidates = queryAllIncludingShadow(candidateSelectors).filter((element) => {
+      if (!isVisible(element)) return false;
+      const text = element.innerText || element.textContent || '';
+      return text.length < 500 && isTooLongText(text);
+    });
+    if (candidates.length) return candidates.at(-1);
+
+    const fallbacks = [...document.querySelectorAll('div, p, span, section')].filter((element) => {
+      if (!isVisible(element)) return false;
+      const text = element.innerText || element.textContent || '';
+      return text.length < 300 && isTooLongText(text);
+    });
+    return fallbacks.at(-1) || null;
   }
 
   function findStopButton() {
@@ -142,6 +166,7 @@
     findThreadError,
     findTooLongSubmissionError,
     findVisible,
+    isTooLongText,
     isVisible,
     latestMessageText,
     normalize,

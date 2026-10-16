@@ -9,7 +9,7 @@ function _recSerial(obs) {
 function _debugEnabled() { try { return localStorage.getItem('chatcmd-debug') === '1'; } catch { return false; } }
 
 globalThis.ChatCmdMonitor = Object.freeze({ create(api) {
-  const { assistantNodes, latestMessageText, findStopButton, findThreadError, clickStopButton } = globalThis.ChatCmdConversationDom;
+  const { assistantNodes, latestMessageText, findStopButton, findThreadError, findTooLongSubmissionError, clickStopButton } = globalThis.ChatCmdConversationDom;
   // previousAnswer: text returned by the previous waitForAssistant call in this tool-loop turn.
   // Passing it prevents the recorder-inactive+hasTurn path from returning a stale answer that
   // was already consumed by the previous turn.
@@ -22,6 +22,7 @@ globalThis.ChatCmdMonitor = Object.freeze({ create(api) {
   let lastCompletionPingAt = 0;
   let lastRequestState = api.unknownRequestState();
   let observedProgress = false;
+  let tooLongHandled = false;
   const startedAt = Date.now();
   const isSubagent = requestId.startsWith('subagent:');
   let deadlineAt = startedAt + (isSubagent ? 30 : 10) * 60_000;
@@ -99,6 +100,22 @@ globalThis.ChatCmdMonitor = Object.freeze({ create(api) {
     const text = effectiveRecorder ? effectiveRecorder.answer : (latest?.innerText?.trim() || latest?.textContent?.trim() || '');
     const stopButton = findStopButton();
     const threadError = findThreadError();
+    const tooLongError = !tooLongHandled ? findTooLongSubmissionError?.() : null;
+
+    if (tooLongError && !stopButton && api.findComposer() && typeof api.handleTooLongError === 'function') {
+      tooLongHandled = true;
+      _diag('too-long-error-detected', {});
+      if (_debugEnabled()) console.log('[ChatCMD Monitor] Detected too long submission error, submitting recovery prompt...');
+      await api.handleTooLongError(requestId);
+      baselineCount = assistantNodes().length;
+      lastText = '';
+      stableSince = 0;
+      lastActivityAt = Date.now();
+      lastStateCheckAt = 0;
+      lastCompletionPingAt = 0;
+      await api.delay(650);
+      continue;
+    }
 
     if (now - lastStateCheckAt > 800) {
       lastStateCheckAt = now;

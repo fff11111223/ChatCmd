@@ -6,16 +6,33 @@ const TOO_LONG_SUBMISSION_ERROR = '你提交的訊息太長，請編輯後重新
 const TOO_LONG_RECOVERY_PROMPT = '上一則工具結果因訊息過長而未能提交。請改用較小範圍、較短輸出或分頁讀取，只取得回答目前問題所需的資訊，再繼續；不要重送完整的大型結果。';
 const {
   assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError, findTooLongSubmissionError,
-  findVisible, isVisible, latestMessageText, normalize,
+  findVisible, isTooLongText, isVisible, latestMessageText, normalize,
 } = globalThis.ChatCmdConversationDom;
 const CONTENT_CONTEXT = globalThis.ChatCmdRuntime.install('chatgpt');
 let activeRequest = null;
 let reconcileScheduled = false;
+async function handleTooLongError(requestId) {
+  const owner = activeRequest;
+  if (!owner || owner.id !== requestId) return false;
+  owner.observer?.stop();
+  const composer = await waitForComposer();
+  const recoveryPrompt = TOO_LONG_RECOVERY_PROMPT;
+  if (owner) {
+    owner.observer = globalThis.ChatCmdObserver?.create(requestId, recoveryPrompt, {
+      current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
+    });
+    await owner?.observer?.bind();
+  }
+  setComposerText(composer, recoveryPrompt);
+  await submitPrompt(composer);
+  return true;
+}
 const waitForAssistant = globalThis.ChatCmdMonitor.create({
   get activeRequest() { return activeRequest; },
   AUTO_RETRY_ENABLED, MAX_AUTO_RETRIES, RAW_BUBBLE_STABILITY_MS, SILENT_RETRY_GRACE_MS, ERROR_INTERRUPT_GRACE_MS, COMPLETION_PING_INTERVAL_MS, INTERRUPTED_PROGRESS_PROMPT,
   requestState: (...args) => requestState(...args), findComposer: (...args) => findComposer(...args),
   reportBrowserCompletion: (...args) => reportBrowserCompletion(...args), retryPrompt: (...args) => retryPrompt(...args),
+  handleTooLongError: (...args) => handleTooLongError(...args),
   unknownRequestState: (...args) => unknownRequestState(...args), isTerminalRequestState: (...args) => isTerminalRequestState(...args),
   delay: (...args) => delay(...args)
 });
@@ -369,12 +386,15 @@ async function submitPrompt(composer) {
 
 async function waitForTooLongSubmissionError(previousError) {
   const previousText = normalize(previousError?.innerText || previousError?.textContent || '');
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const error = findTooLongSubmissionError?.();
-    const text = normalize(error?.innerText || error?.textContent || '');
-    if (text.includes(TOO_LONG_SUBMISSION_ERROR)
-        && (error !== previousError || text !== previousText)) return true;
+    if (error) {
+      const text = normalize(error.innerText || error.textContent || '');
+      if (isTooLongText(text) || text.includes('訊息太長') || text.includes('太長') || text.includes('too long')) {
+        if (!previousError || error !== previousError || text !== previousText) return true;
+      }
+    }
     // ChatGPT may briefly add a placeholder assistant bubble (or activate Stop)
     // before displaying its rejection. Do not treat either as proof of success:
     // recovery is authorized only by the explicit visible UI error above.
@@ -476,19 +496,8 @@ async function executeToolLoop(owner, requestId, initialResult) {
       setComposerText(composer, replyText);
       await submitPrompt(composer);
       if (await waitForTooLongSubmissionError(previousError)) {
-        // This fallback is gated by ChatGPT's exact visible rejection text. It
-        // does not inspect or follow any instruction contained in the oversized
-        // tool result itself.
-        owner?.observer?.stop();
+        await handleTooLongError(requestId);
         submittedReply = TOO_LONG_RECOVERY_PROMPT;
-        if (owner) {
-          owner.observer = globalThis.ChatCmdObserver?.create(requestId, submittedReply, {
-            current: () => activeRequest === owner && globalThis.ChatCmdRuntime.current(CONTENT_CONTEXT),
-          });
-          await owner?.observer?.bind();
-        }
-        setComposerText(composer, submittedReply);
-        await submitPrompt(composer);
       }
     };
     const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(requestId, currentResult, bridgeSubmit);
