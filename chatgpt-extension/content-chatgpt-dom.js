@@ -5,9 +5,12 @@
 
   function isVisible(element) {
     if (!(element instanceof Element)) return false;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    if (element.hidden) return false;
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : {};
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    const rect = element.getBoundingClientRect?.() || { width: 0, height: 0 };
+    if (rect.width > 0 || rect.height > 0) return true;
+    return Boolean(element.isConnected);
   }
 
   function findVisible(selectors) {
@@ -83,54 +86,112 @@
     }) || null;
   }
 
+  function isUserInputElement(element) {
+    if (!element || !(element instanceof Element)) return false;
+    return Boolean(
+      element.closest('textarea, [contenteditable], form [role="textbox"], .ProseMirror')
+      || element.closest('[data-message-author-role="user"], [data-turn="user"]')
+    );
+  }
+
   function isTooLongText(text) {
-    const s = normalize(text);
+    const s = normalize(text).replace(/[.!。！，,\s]+$/g, '').trim();
+    if (!s) return false;
+    // Client-side pill or tooltip
+    if (/^(?:訊息太長|信息太长|message too long)$/i.test(s)) return true;
+    // Server-side error bubble sentences
     return s.includes('你提交的訊息太長')
-      || s.includes('訊息太長')
+      || s.includes('你提交的信息太长')
       || s.includes('message you submitted was too long')
-      || s.includes('message is too long')
-      || s.includes('message too long');
+      || s.includes('the message you submitted was too long')
+      || /^(?:訊息太長|信息太长|message too long)[，,。.!！\s]/i.test(s);
   }
 
   function findTooLongSubmissionError() {
     const candidateSelectors = [
       '[role="alert"]',
+      '[role="tooltip"]',
       '[data-testid*="thread-error" i]',
       '[data-testid*="error" i]',
+      '[data-testid*="tooltip" i]',
+      '[data-radix-popper-content-wrapper]',
+      '[data-floating-ui-portal]',
       '[class*="text-token-text-error"]',
       '[class*="bg-token-surface-error"]',
       '[class*="border-token-surface-error"]',
       '[class*="text-red" i]',
       '[class*="error" i]',
+      '[class*="tooltip" i]',
+      '[class*="popover" i]',
+      '[class*="pill" i]',
+      '[class*="badge" i]',
     ].join(',');
     const candidates = queryAllIncludingShadow(candidateSelectors).filter((element) => {
-      if (!isVisible(element)) return false;
+      if (!isVisible(element) || isUserInputElement(element)) return false;
       const text = element.innerText || element.textContent || '';
       return text.length < 500 && isTooLongText(text);
     });
     if (candidates.length) return candidates.at(-1);
 
-    const fallbacks = [...document.querySelectorAll('div, p, span, section')].filter((element) => {
-      if (!isVisible(element)) return false;
+    const fallbacks = queryAllIncludingShadow('div, p, span, section').filter((element) => {
+      if (!isVisible(element) || isUserInputElement(element)) return false;
       const text = element.innerText || element.textContent || '';
       return text.length < 300 && isTooLongText(text);
     });
     return fallbacks.at(-1) || null;
   }
 
+  function isSendBlockedByTooLong(composer = null) {
+    const comp = composer || document.querySelector('form textarea, form [role="textbox"], textarea, [contenteditable="true"]');
+    const button = findSendButton(comp);
+    // If the send button is enabled, sending is NOT blocked!
+    if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true') {
+      return false;
+    }
+    if (findTooLongSubmissionError()) return true;
+    if (button) {
+      const btnText = (button.getAttribute('aria-label') || '') + ' ' + (button.title || '') + ' ' + (button.textContent || '');
+      if (isTooLongText(btnText)) return true;
+      const parent = button.parentElement;
+      if (parent) {
+        const tooltips = [...parent.querySelectorAll('[role="tooltip"], [class*="tooltip" i], [class*="pill" i], [class*="popover" i], span, div')]
+          .filter((el) => isVisible(el) && !isUserInputElement(el));
+        for (const el of tooltips) {
+          const text = el.innerText || el.textContent || '';
+          if (text.length < 50 && isTooLongText(text)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   function findStopButton() {
-    const composers = [...document.querySelectorAll('form[data-type="unified-composer"]')].filter(isVisible);
+    const composers = [...document.querySelectorAll('form[data-type="unified-composer"], [data-testid*="composer" i], form')].filter(isVisible);
     const root = composers.at(-1) || document;
-    const direct = findVisibleWithin(root, [
+    const selectors = [
       'button[data-testid="stop-button"]',
       'button[data-testid="stop-generating-button"]',
+      'button[data-testid*="stop" i]',
       'button[aria-label*="Stop" i]',
       'button[aria-label*="Dừng" i]',
       'button[aria-label*="Ngừng" i]',
-    ]);
+      'button[aria-label*="停止" i]',
+      'button[title*="停止" i]',
+    ];
+    let direct = findVisibleWithin(root, selectors);
+    if (!direct && root !== document) direct = findVisibleWithin(document, selectors);
     if (direct) return direct;
-    return [...root.querySelectorAll('button')].filter(isVisible).find((button) =>
-      /^(stop|dừng|ngừng)(?:\s|$)/i.test(normalize(button.getAttribute('aria-label') || button.textContent))) || null;
+    const isStopLabel = (button) => {
+      const label = normalize(button.getAttribute('aria-label') || button.title || button.textContent);
+      return /^(stop|dừng|ngừng|停止)(?:\s|$)/i.test(label)
+        || label.includes('停止產生') || label.includes('停止生成') || label.includes('停止回應') || label.includes('停止回答');
+    };
+    const fromRoot = [...root.querySelectorAll('button')].filter(isVisible).find(isStopLabel);
+    if (fromRoot) return fromRoot;
+    if (root !== document) {
+      return [...document.querySelectorAll('button')].filter(isVisible).find(isStopLabel) || null;
+    }
+    return null;
   }
 
   function clickStopButton() {
@@ -166,6 +227,7 @@
     findThreadError,
     findTooLongSubmissionError,
     findVisible,
+    isSendBlockedByTooLong,
     isTooLongText,
     isVisible,
     latestMessageText,

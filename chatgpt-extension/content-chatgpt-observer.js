@@ -126,7 +126,8 @@
       if (changed) { dirty = true; revision = Math.max(revision + 1, Date.now()); checkpoint(); }
     }
     async function flush(completed = false, scanFirst = true) {
-      if (scanFirst) scan();
+      if (timer !== null) { cancel(timer); timer = null; }
+      if (scanFirst && (!complete || completed)) scan();
       // ChatGPT can signal completion just before the final rendered bubble is
       // attached. Keep this request-scoped observer alive briefly and rescan the
       // rendered DOM so a late final mutation is not persisted as an empty turn.
@@ -135,13 +136,18 @@
       // A short prefix can be the only visible fragment while ChatGPT is still
       // attaching the rest of a streamed answer or its tool-call block. Reconcile
       // short captures too; an answer's mere presence is not proof it is complete.
-      if (completed && capturedAnswerChars() < 120) {
+      if (inFlight) {
+        const ok = await inFlight;
+        if (ok && dirty && !stopped) return flush(completed);
+        return !dirty;
+      }
+      if (completed && capturedAnswerChars() === 0) {
         const deadline = Date.now() + 5_000;
-        while (!stopped && current() && Date.now() < deadline && capturedAnswerChars() < 120) {
+        while (!stopped && current() && Date.now() < deadline && capturedAnswerChars() === 0) {
           await new Promise((resolve) => later(resolve, 200));
           scan();
         }
-        if (capturedAnswerChars() < 120) {
+        if (capturedAnswerChars() === 0) {
           const latest = dom.latestUser?.();
           globalThis.ChatCmdCaptureStatus?.report('transcript-empty-at-completion',
             `bound=${bound}; userBound=${Boolean(userId)}; userMatches=${Boolean(latest && matchesSubmitted(dom, latest.text, submittedContent))}; `
@@ -151,11 +157,6 @@
       }
       if (completed && !complete) {
         complete = true; dirty = true; revision = Math.max(revision + 1, Date.now()); checkpoint();
-      }
-      if (inFlight) {
-        const ok = await inFlight;
-        if (ok && dirty && !stopped) return flush(completed);
-        return !dirty;
       }
       if (!bound || stopped || !current() || !conversationId || !userId) return false;
       if (!dirty) return true;
@@ -177,17 +178,17 @@
       try { return await inFlight; } finally { inFlight = null; scheduleSend(); }
     }
     function scheduleSend() {
-      if (!bound || !dirty || stopped || !current() || inFlight) return;
+      if (!bound || !dirty || stopped || !current() || inFlight || complete) return;
       if (timer !== null) cancel(timer);
       // Always retain the trailing update. The last mutation may fall inside the rate limit.
-      timer = later(() => { timer = null; void flush(); }, Math.max(25, 500 - (Date.now() - lastSend)));
+      timer = later(() => { timer = null; if (!stopped && !complete && dirty) void flush(); }, Math.max(25, 500 - (Date.now() - lastSend)));
     }
     function schedule() {
-      if (queued || stopped || !current()) return;
+      if (queued || stopped || !current() || complete) return;
       queued = true;
       void Promise.resolve().then(() => {
         queued = false;
-        if (stopped || !current()) return;
+        if (stopped || !current() || complete) return;
         scan();
         if (bound && dirty && !inFlight && Date.now() - lastSend >= 500) void flush(false, false);
         else scheduleSend();
@@ -242,7 +243,7 @@
         // the last observed change; ordinary mutation events remain the fast path.
         const capturedChars = messages.filter((message) => message.kind === 'answer')
           .reduce((total, message) => total + (message.content?.length || 0), 0);
-        if (bound && capturedChars < 120 && Date.now() < fallbackRescanUntil) schedule();
+        if (bound && !complete && !stopped && !inFlight && capturedChars < 120 && Date.now() < fallbackRescanUntil) schedule();
         discoverShadowRootsPeriodically();
       }, 3000);
     }

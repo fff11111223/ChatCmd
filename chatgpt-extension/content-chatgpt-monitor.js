@@ -9,7 +9,7 @@ function _recSerial(obs) {
 function _debugEnabled() { try { return localStorage.getItem('chatcmd-debug') === '1'; } catch { return false; } }
 
 globalThis.ChatCmdMonitor = Object.freeze({ create(api) {
-  const { assistantNodes, latestMessageText, findStopButton, findThreadError, findTooLongSubmissionError, clickStopButton } = globalThis.ChatCmdConversationDom;
+  const { assistantNodes, latestMessageText, findStopButton, findThreadError, findTooLongSubmissionError, isSendBlockedByTooLong, clickStopButton } = globalThis.ChatCmdConversationDom;
   // previousAnswer: text returned by the previous waitForAssistant call in this tool-loop turn.
   // Passing it prevents the recorder-inactive+hasTurn path from returning a stale answer that
   // was already consumed by the previous turn.
@@ -97,10 +97,11 @@ globalThis.ChatCmdMonitor = Object.freeze({ create(api) {
       }
       if (effectiveRecorder) void recorder.flush(false, false);
     }
-    const text = effectiveRecorder ? effectiveRecorder.answer : (latest?.innerText?.trim() || latest?.textContent?.trim() || '');
+    const rawText = latest?.innerText?.trim() || latest?.textContent?.trim() || '';
+    const text = effectiveRecorder ? effectiveRecorder.answer : (globalThis.ChatCmdTranscript?.isNonAnswerUiText?.(rawText) ? '' : rawText);
     const stopButton = findStopButton();
     const threadError = findThreadError();
-    const tooLongError = !tooLongHandled ? findTooLongSubmissionError?.() : null;
+    const tooLongError = !tooLongHandled ? (findTooLongSubmissionError?.() || isSendBlockedByTooLong?.()) : null;
 
     if (tooLongError && !stopButton && api.findComposer() && typeof api.handleTooLongError === 'function') {
       tooLongHandled = true;

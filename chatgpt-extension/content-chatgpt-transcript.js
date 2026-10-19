@@ -26,11 +26,28 @@
       || /^(?:searched|searching)\s+\d+\s+sites?$/.test(value)
       || /^\d+\s+sites?\s+(?:searched|visited)$/.test(value);
   }
+  function isThinkingPlaceholder(text) {
+    const value = normalize(text).toLowerCase().replace(/[.!。！…]+$/g, '').trim();
+    if (!value) return false;
+    return /^(?:正在思考|思考中|thinking|thought|thinking process)+$/i.test(value)
+      || /^(?:處理時間為|处理时间为|thought for|已思考)\s*[\d.]+\s*(?:s|秒|seconds?|mins?|minutes?)$/i.test(value)
+      || /^(?:thought for a few seconds|thought for a few moments|thought for a moment)$/i.test(value);
+  }
+  function isThoughtNode(node) {
+    if (!node || !(node instanceof Element)) return false;
+    return Boolean(
+      node.closest('[data-interrupted]:not([data-interrupted="false"])')
+      || node.closest('[data-testid*="thought" i], [data-testid*="reasoning" i]')
+      || node.closest('[class*="thought" i], [class*="reasoning" i]')
+      || node.closest('button[aria-label*="thought" i], button[aria-label*="thinking" i], button[aria-label*="思考" i]')
+      || node.closest('[aria-label*="thought" i], [aria-label*="thinking" i], [aria-label*="思考" i]')
+    );
+  }
   function isNonAnswerUiText(text) {
     const value = normalize(text);
-    // ChatGPT briefly renders an ellipsis-only assistant bubble while creating
-    // a response. It is a loading placeholder, not a final answer to capture.
-    return isFooterDisclaimer(value) || isActivityStatus(value) || /^(?:\.{3,}|…+|⋯)$/.test(value);
+    // ChatGPT briefly renders an ellipsis-only assistant bubble or thinking
+    // placeholders while creating a response. They are loading placeholders, not final answers.
+    return isFooterDisclaimer(value) || isActivityStatus(value) || isThinkingPlaceholder(value) || /^(?:\.{3,}|…+|⋯)$/.test(value);
   }
   function queryAll(selector, root = document) {
     const found = [...root.querySelectorAll(selector)];
@@ -119,7 +136,7 @@
     // request to the assistant bubble. Keep the original submitted node while
     // it remains connected; the observer passes that node back on every scan.
     const preferredIsUserLike = preferredNode?.isConnected
-      && (preferredNode.matches?.(USERS) || preferredNode.matches?.(USER_TEXT_FALLBACK));
+      && (!semantic && (preferredNode.matches?.(USERS) || preferredNode.matches?.(USER_TEXT_FALLBACK)));
     const node = preferredIsUserLike ? preferredNode : users.at(-1);
     if (!node) return null;
     const content = userText(node);
@@ -289,7 +306,7 @@
       }
     }
     const parts = [...candidates].sort(compareRenderedOrder)
-      .map((node) => ({ node, kind: node.closest('[data-interrupted]:not([data-interrupted="false"])') ? 'commentary' : 'answer',
+      .map((node) => ({ node, kind: (isThoughtNode(node) || node.closest('[data-interrupted]:not([data-interrupted="false"])')) ? 'commentary' : 'answer',
         content: markdown(node).replace(/\n{3,}/g, '\n\n').trim(),
         messageId: node.closest('[data-message-id]')?.getAttribute('data-message-id') || '' }))
       .filter((part) => part.content && !isNonAnswerUiText(part.content));
@@ -302,13 +319,14 @@
     ];
     const toolCalls = protocolParts.filter((part, index, all) =>
       all.findIndex((candidate) => candidate.content === part.content) === index);
+    const commentaryParts = parts.filter((part) => part.kind === 'commentary');
     // Prefer one transcript source. Combining semantic turns, broad page scans,
     // and a range-to-composer tail duplicates the same rendered answer as nested
-    // fragments. Fall back only when the preceding source found no answer text.
+    // fragments. Fall back only when the preceding source found no answer text and no commentary.
     let selectedAnswers = parts.filter((part) => part.kind === 'answer');
-    if (!selectedAnswers.length) selectedAnswers = rolelessParts.filter((part) => part.kind === 'answer');
-    if (!selectedAnswers.length) selectedAnswers = genericRenderedAnswerParts(user).filter((part) => part.kind === 'answer');
-    if (!selectedAnswers.length) {
+    if (!selectedAnswers.length && !commentaryParts.length) selectedAnswers = rolelessParts.filter((part) => part.kind === 'answer');
+    if (!selectedAnswers.length && !commentaryParts.length) selectedAnswers = genericRenderedAnswerParts(user).filter((part) => part.kind === 'answer');
+    if (!selectedAnswers.length && !commentaryParts.length) {
       const tailPart = renderedTailPart(user, protocolParts);
       if (tailPart) selectedAnswers = [tailPart];
     }
@@ -326,7 +344,7 @@
       return !answers.some((other) => other !== part && comparable(other.content).length > text.length
         && comparable(other.content).includes(text));
     });
-    return [...nonOverlapping, ...uniqueToolCalls].sort((a, b) => compareRenderedOrder(a.node, b.node));
+    return [...commentaryParts, ...nonOverlapping, ...uniqueToolCalls].sort((a, b) => compareRenderedOrder(a.node, b.node));
   }
   function stripToolCallBlocks(content, protocolParts) {
     let result = content;
@@ -377,7 +395,7 @@
     for (let ancestor = user.node; ancestor && ancestor !== region; ancestor = ancestor.parentElement) {
       const following = [];
       for (let sibling = ancestor.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
-        if (hidden(sibling)) continue;
+        if (hidden(sibling) || isThoughtNode(sibling)) continue;
         const content = markdown(sibling).replace(/\n{3,}/g, '\n\n').trim();
         if (!content || isNonAnswerUiText(content)) continue;
         const tool = sibling.closest('[data-testid*="tool-call" i],[data-tool-call-id],span[class*="tool-message"]');
@@ -405,6 +423,7 @@
       if (compareRenderedOrder(user.node, node) >= 0) return false;
       if (node.closest('form,[contenteditable="true"],[data-testid*="composer" i],nav,header,footer,aside')) return false;
       if (node.closest('[data-testid*="tool-call" i],[data-tool-call-id],span[class*="tool-message"]')) return false;
+      if (isThoughtNode(node)) return false;
       return true;
     });
     const candidateSet = new Set(candidates);
@@ -458,5 +477,5 @@
       + `bodyTextLength=${normalize(document.body?.innerText).length}; ${userScanDiagnostics()}`;
   }
   globalThis.ChatCmdTranscript = Object.freeze({ latestUser, userText, readParts, readDiagnostics, normalize,
-    isFooterDisclaimer, isActivityStatus, isNonAnswerUiText, conversationId, userScanDiagnostics, toolBlockDiagnostics });
+    isFooterDisclaimer, isActivityStatus, isNonAnswerUiText, isThinkingPlaceholder, isThoughtNode, conversationId, userScanDiagnostics, toolBlockDiagnostics });
 })();

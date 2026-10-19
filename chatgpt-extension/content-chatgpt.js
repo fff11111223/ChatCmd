@@ -6,7 +6,7 @@ const TOO_LONG_SUBMISSION_ERROR = '你提交的訊息太長，請編輯後重新
 const TOO_LONG_RECOVERY_PROMPT = '上一則工具結果因訊息過長而未能提交。請改用較小範圍、較短輸出或分頁讀取，只取得回答目前問題所需的資訊，再繼續；不要重送完整的大型結果。';
 const {
   assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError, findTooLongSubmissionError,
-  findVisible, isTooLongText, isVisible, latestMessageText, normalize,
+  findVisible, isSendBlockedByTooLong, isTooLongText, isVisible, latestMessageText, normalize,
 } = globalThis.ChatCmdConversationDom;
 const CONTENT_CONTEXT = globalThis.ChatCmdRuntime.install('chatgpt');
 let activeRequest = null;
@@ -125,7 +125,14 @@ async function runRequest(message) {
     globalThis.ChatCmdToolBridge?.reset?.();
     await attachTextFiles(composer, message.attachments);
     setComposerText(composer, message.submittedContent);
-    await submitPrompt(composer);
+    try {
+      await submitPrompt(composer);
+    } catch (error) {
+      if (error?.isTooLong || findTooLongSubmissionError?.() || isSendBlockedByTooLong?.(composer)) {
+        throw new Error('訊息過長，ChatGPT 已停用發送按鈕。請縮短內容後再發送。');
+      }
+      throw error;
+    }
     ({ conversationId, conversationUrl } = await waitForConversationIdentity());
     started = true;
     await progress({
@@ -378,7 +385,20 @@ async function submitPrompt(composer) {
   await delay(100);
   const button = await waitFor(() => findSendButton(composer), 5_000, 'ChatGPT send button was not found.');
   if (button.disabled || button.getAttribute('aria-disabled') === 'true') {
-    await waitFor(() => !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null, 20_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
+    if (isSendBlockedByTooLong?.(composer) || findTooLongSubmissionError?.()) {
+      const error = new Error('TOO_LONG_SUBMISSION');
+      error.isTooLong = true;
+      throw error;
+    }
+    const result = await waitFor(() => {
+      if (isSendBlockedByTooLong?.(composer) || findTooLongSubmissionError?.()) return 'TOO_LONG';
+      return (!button.disabled && button.getAttribute('aria-disabled') !== 'true') ? button : null;
+    }, 20_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
+    if (result === 'TOO_LONG') {
+      const error = new Error('TOO_LONG_SUBMISSION');
+      error.isTooLong = true;
+      throw error;
+    }
   }
   button.click();
   composer.blur();
@@ -445,7 +465,16 @@ async function reportBrowserCompletion(requestId, assistantContent) {
 async function retryPrompt(requestId, content, reason, continuesPreviousProgress) {
   const composer = await waitForComposer();
   const retryCount = (activeRequest?.retryCount || 0) + 1;
-  setComposerText(composer, content); await submitPrompt(composer);
+  setComposerText(composer, content);
+  try {
+    await submitPrompt(composer);
+  } catch (error) {
+    if (error?.isTooLong || findTooLongSubmissionError?.() || isSendBlockedByTooLong?.(composer)) {
+      await handleTooLongError(requestId);
+      return;
+    }
+    throw error;
+  }
   if (activeRequest?.id === requestId) activeRequest.retryCount = retryCount;
   await progress({ requestId, stage: 'retrying', retryCount, reason, continuesPreviousProgress });
 }
@@ -494,10 +523,20 @@ async function executeToolLoop(owner, requestId, initialResult) {
       }
       const previousError = findTooLongSubmissionError?.();
       setComposerText(composer, replyText);
-      await submitPrompt(composer);
-      if (await waitForTooLongSubmissionError(previousError)) {
-        await handleTooLongError(requestId);
-        submittedReply = TOO_LONG_RECOVERY_PROMPT;
+      try {
+        await submitPrompt(composer);
+        if (await waitForTooLongSubmissionError(previousError)) {
+          await handleTooLongError(requestId);
+          submittedReply = TOO_LONG_RECOVERY_PROMPT;
+        }
+      } catch (error) {
+        if (error?.isTooLong || findTooLongSubmissionError?.() || isSendBlockedByTooLong?.(composer)) {
+          console.log('[ChatCMD] Message too long detected upon prompt submission, initiating recovery prompt...');
+          await handleTooLongError(requestId);
+          submittedReply = TOO_LONG_RECOVERY_PROMPT;
+        } else {
+          throw error;
+        }
       }
     };
     const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(requestId, currentResult, bridgeSubmit);

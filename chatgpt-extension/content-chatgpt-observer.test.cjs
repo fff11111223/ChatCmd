@@ -10,7 +10,7 @@ function setup(t, html = '') {
   const sent = [];
   let send = async (payload) => { sent.push(JSON.parse(JSON.stringify(payload))); return { ok: true, accepted: true }; };
   window.ChatCmdRuntime = { sendMessage: (payload) => send(payload) };
-  for (const file of ['content-chatgpt-transcript.js', 'content-chatgpt-observer.js']) window.eval(readFileSync(join(__dirname, file), 'utf8'));
+  for (const file of ['content-chatgpt-transcript.js', 'content-chatgpt-dom.js', 'content-chatgpt-observer.js']) window.eval(readFileSync(join(__dirname, file), 'utf8'));
   t.after(() => { window.dispatchEvent(new window.Event('pagehide')); window.close(); });
   return { window, sent, setSend: (handler) => { send = handler; },
     add: (html) => window.document.body.insertAdjacentHTML('beforeend', html) };
@@ -236,3 +236,60 @@ test('multi-turn: turn-2 observer does not bind to turn-1 tool result and stays 
   assert.equal(capture2.answer, 'Third turn response');
   assert.equal(capture2.active, true);
 });
+
+test('thinking placeholder is excluded from answer and reasoning blocks are classified as commentary', async (t) => {
+  const env = setup(t);
+  const capture = recorder(t, env);
+  env.add(user('u')
+    + '<section data-testid="conversation-turn-assistant">'
+    + '<div data-message-author-role="assistant" data-message-id="resp-a">'
+    + '<div class="markdown">正在思考正在思考</div>'
+    + '<div data-testid="thought"><div class="markdown">處理時間為 23s</div></div>'
+    + '<div data-testid="reasoning"><div class="markdown">釐清使用障礙</div></div>'
+    + '</div></section>');
+  await capture.bind();
+
+  // While only thinking is present, answer must be empty and hasTurn false
+  assert.equal(capture.answer, '');
+  assert.equal(capture.hasTurn, false);
+
+  // Thought steps are recorded as commentary in messages
+  const commentaryMessages = env.sent.at(-1)?.messages.filter((m) => m.kind === 'commentary') || [];
+  assert.ok(commentaryMessages.some((m) => m.content === '釐清使用障礙'));
+
+  // ChatGPT completes reasoning and appends real markdown answer
+  env.window.document.querySelector('.markdown').remove(); // remove placeholder
+  env.window.document.querySelector('[data-message-id="resp-a"]')
+    .insertAdjacentHTML('beforeend', '<div class="markdown"><p>從目前查到的 ChatCMD 程式碼來看，正常的子代理流程有實作...</p></div>');
+
+  await capture.flush(true);
+  assert.equal(capture.hasTurn, true);
+  assert.equal(capture.answer, '從目前查到的 ChatCMD 程式碼來看，正常的子代理流程有實作...');
+});
+
+test('detects 訊息太長 pill and blocks send button via isSendBlockedByTooLong', async (t) => {
+  const env = setup(t);
+  const dom = env.window.ChatCmdConversationDom;
+
+  // Real ChatGPT too-long strings must match
+  assert.equal(dom.isTooLongText('訊息太長'), true);
+  assert.equal(dom.isTooLongText('Message too long'), true);
+  assert.equal(dom.isTooLongText('你提交的訊息太長，請編輯後重新提交。'), true);
+
+  // Normal conversation text discussing length must NOT match!
+  assert.equal(dom.isTooLongText('我讀了一下原因是內容過長無法發送就自動timeout了，我已經修正這個問題'), false);
+  assert.equal(dom.isTooLongText('這篇文章有點長'), false);
+
+  // Enabled send button with conversational text discussing length must NOT be blocked
+  env.add('<form data-type="unified-composer"><textarea id="prompt-textarea">我讀了一下原因是內容過長無法發送</textarea><div><button data-testid="send-button">Send</button></div></form>');
+  const composer = env.window.document.getElementById('prompt-textarea');
+  assert.equal(dom.isSendBlockedByTooLong(composer), false);
+
+  // Disabled send button with 訊息太長 pill MUST be blocked
+  const button = env.window.document.querySelector('[data-testid="send-button"]');
+  button.disabled = true;
+  button.parentElement.insertAdjacentHTML('beforeend', '<div class="pill">訊息太長</div>');
+  assert.equal(dom.isSendBlockedByTooLong(composer), true);
+});
+
+
