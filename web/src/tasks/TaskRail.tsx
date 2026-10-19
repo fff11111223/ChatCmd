@@ -124,6 +124,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
     try {
       const status = await reloadBrowserChatTabs();
       setChatGptTabMissing(status.chatGptTabCount === 0 && status.geminiTabCount > 0);
+      await new Promise((resolve) => setTimeout(resolve, 500));
       await applyFirstPage();
     } catch (reason) {
       setReloadError(reason instanceof Error ? reason.message : tr('Could not reload browser pages.'));

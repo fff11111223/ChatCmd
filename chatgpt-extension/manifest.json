@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatCMD ChatGPT Bridge",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "Bridges the local ChatCMD console to an already signed-in chatgpt.com tab.",
   "permissions": [
     "tabs",

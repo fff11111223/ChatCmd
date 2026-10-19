@@ -50,7 +50,11 @@
     }
     report('user-message-detected', `source=${user.source || 'semantic'}; contentLength=${user.content.length}`);
     if (globalThis.ChatCmdCompact?.busy || globalThis.ChatCmdCompactProtocol?.parse(user.content)) { report('turn-ignored', 'compact protocol owns the turn'); return; }
-    if (user.content.includes('chatcmd_tool_result') || (user.content.includes('\"tool\"') && user.content.includes('\"id\"'))) { remember(key); report('turn-ignored', 'tool result message'); return; }
+    const hasPendingTools = () => {
+      const latestAssistant = dom.latestMessageText?.('assistant') || '';
+      return Boolean(globalThis.ChatCmdToolBridge?.hasPendingToolCalls?.(latestAssistant));
+    };
+    if (user.content.trim().startsWith('```chatcmd_tool_result') && !hasPendingTools()) { remember(key); report('turn-ignored', 'tool result message'); return; }
     if (controller.active) {
       if (controller.active.observer?.userMessageId === user.id && controller.active.observer.active) remember(key);
       else if (controller.active.observer?.userMessageId) retry(500);
@@ -116,6 +120,35 @@
   document.addEventListener('visibilitychange', schedule);
   window.addEventListener('pageshow', schedule);
   pollTimer = later(poll, NATIVE_FALLBACK_POLL_MS, { background: false });
+  if (typeof chrome !== 'undefined' && chrome?.runtime?.onMessage?.addListener) {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type === 'chatcmd-trigger-native-capture') {
+        (async () => {
+          const deadline = Date.now() + 10_000;
+          let foundUser = null;
+          while (Date.now() < deadline) {
+            try {
+              foundUser = dom.latestUser?.();
+              if (foundUser?.content?.trim()) break;
+            } catch { /* wait for hydration */ }
+            await (clock ? clock.sleep(250) : new Promise((r) => setTimeout(r, 250)));
+          }
+          if (!foundUser?.content?.trim()) {
+            sendResponse({ ok: false, error: 'No user message found within timeout' });
+            return;
+          }
+          const userKey = keyFor(foundUser);
+          if (userKey) seen.delete(userKey);
+          retryAt = 0;
+          pending = false;
+          await tick();
+          sendResponse({ ok: true, conversationId: conversationId(), userMessageId: foundUser.id });
+        })().catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+        return true;
+      }
+      return false;
+    });
+  }
   globalThis.ChatCmdNativeCapture = Object.freeze({ stop, tick, schedule });
   report('capture-script-ready', `controller=${Boolean(controller)}; transcript=${Boolean(dom)}; conversation=${Boolean(conversationId())}`);
   Promise.resolve(globalThis.ChatCmdResumeReady).then(() => void tick());

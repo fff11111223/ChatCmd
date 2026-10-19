@@ -237,11 +237,29 @@ async function reloadChatTabs() {
     ? await recoverContentScriptsOnStartup()
     : { failures: [] };
   if (typeof reconcileOpenChatGptIdentities === 'function') {
-    void reconcileOpenChatGptIdentities();
+    await reconcileOpenChatGptIdentities();
   }
   if (typeof reconcileOpenGeminiIdentities === 'function') {
-    void reconcileOpenGeminiIdentities();
+    await reconcileOpenGeminiIdentities();
   }
+
+  const liveTabs = typeof chatGptTabs === 'function' ? await chatGptTabs() : chatGptTabsList;
+  const capturePromises = liveTabs.map(async (tab) => {
+    const liveId = typeof conversationIdFromUrl === 'function' ? conversationIdFromUrl(tab?.url || '') : null;
+    if (!tab?.id || !liveId || (typeof isProvisionalConversationId === 'function' && isProvisionalConversationId(liveId))) return;
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'chatcmd-trigger-native-capture' });
+      if (typeof logExtension === 'function') {
+        await logExtension('info', 'tabs', `Native capture triggered on tab ${tab.id} (${tab.url})`);
+      }
+    } catch (err) {
+      if (typeof logExtension === 'function') {
+        await logExtension('warn', 'tabs', `Native capture trigger on tab ${tab.id} (${tab.url}): ${errorMessage(err)}`);
+      }
+    }
+  });
+  await Promise.all(capturePromises);
+
   return {
     reloadedCount: reloadResults.filter(Boolean).length,
     tabCount: allTabs.length,
