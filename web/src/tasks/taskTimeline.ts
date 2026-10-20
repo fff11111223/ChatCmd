@@ -3,6 +3,7 @@ import { appLocale, formatAppNumber, tr } from '../i18n';
 import type { Task, TaskTurn, TimelineEvent } from '../types';
 import { collapseChatGptFallbackTurns } from './chatGptTurnPreference';
 import { formatToolOutput } from './taskToolOutput';
+import type { BrowserThinking } from './chatGptThinking';
 
 export type ActivityKind = 'read' | 'search' | 'edit' | 'create' | 'delete' | 'copy' | 'move' | 'git' | 'command' | 'tool';
 export type ToolActivity = {
@@ -56,7 +57,7 @@ export function buildTaskTurns(events: TimelineEvent[], task: Task): TaskTurn[] 
   return collapseChatGptFallbackTurns(turns);
 }
 
-export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
+export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThinking | null): ProcessBlock[] {
   const blocks: ProcessBlock[] = [];
   const pending = new Map<string, ToolActivity>();
   const pendingByTool = new Map<string, ToolActivity[]>();
@@ -76,6 +77,46 @@ export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
         if (stopReason) existing.error = tr('Stop reason: {reason}', { reason: stopReason });
         continue;
       }
+      let precedingMessage = lastSeenAgentText;
+      if (!precedingMessage && browser?.messages?.length) {
+        for (let i = 0; i < browser.messages.length; i++) {
+          const msg = browser.messages[i];
+          if (msg.content.includes(activityId) || msg.content.includes(tool)) {
+            // Check if there is prose before the tool call in the same message.
+            // Match the tool call opening fence or label.
+            const fenceMatch = msg.content.match(/`{1,}\s*chatcmd_tool_call\b/i);
+            const callIndex = fenceMatch ? fenceMatch.index! : msg.content.indexOf(activityId);
+            if (callIndex > 0) {
+              const textBefore = msg.content.slice(0, callIndex)
+                .replace(/`{1,}\s*chatcmd_tool_call[\s\S]*$/, '')
+                .trim();
+              if (textBefore) {
+                precedingMessage = textBefore;
+                break;
+              }
+            }
+            // If this message contains only the tool call or the text before was empty,
+            // check the immediately preceding message(s) for commentary/prose.
+            for (let prevIdx = i - 1; prevIdx >= 0; prevIdx--) {
+              const prev = browser.messages[prevIdx];
+              // Skip messages that are themselves tool call blocks or tool results
+              if (prev?.content && !prev.content.includes('chatcmd_tool_call') && !prev.content.includes('chatcmd_tool_result')) {
+                precedingMessage = prev.content.trim();
+                break;
+              }
+            }
+            if (precedingMessage) break;
+          }
+        }
+      }
+      // Sanitize precedingMessage: if it still has trailing backticks, protocol tags or broken JSON, strip them.
+      if (precedingMessage) {
+        precedingMessage = precedingMessage
+          .replace(/`{1,}\s*chatcmd_tool_call[\s\S]*$/i, '')
+          .replace(/`{1,}\s*\{[\s\S]*$/, '')
+          .replace(/\{[\s\S]*"id"[\s\S]*"tool"[\s\S]*$/, '')
+          .trim();
+      }
       const activity: ToolActivity = {
         id: activityId,
         tool,
@@ -84,7 +125,7 @@ export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
         status: stringValue(payload.status) || 'started',
         startedAt: event.occurredAt,
         turnId: event.turnId,
-        precedingText: lastSeenAgentText || undefined,
+        precedingText: precedingMessage || undefined,
       };
       if (!currentActivities) {
         currentActivities = [];

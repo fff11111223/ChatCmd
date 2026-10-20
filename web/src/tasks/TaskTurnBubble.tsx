@@ -51,7 +51,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
   const browser = browserThinking(events);
   const dualSources = agentLabel === 'ChatGPT' || events.some(isBrowserEvent);
   const processEvents = events.filter((event) => event !== userMessage?.event && !isBrowserEvent(event));
-  const blocks = buildProcessBlocks(processEvents);
+  const blocks = buildProcessBlocks(processEvents, browser);
   const activities = blocks.flatMap((block) => block.type === 'activities' ? block.activities : []);
   const rawStatus = turn.status ?? 'incomplete';
   const status = completion ? 'completed' : rawStatus;
@@ -421,7 +421,7 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
         ? <div className="activity-popup-content"><div className="activity-detail-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div></div>
         : detailError
           ? <div className="activity-popup-content"><div className="activity-error-detail" role="alert"><div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Could not load tool details.')}</strong></div><div className="activity-error-message">{detailError}</div><button className="button secondary compact" type="button" onClick={loadDetail}>{tr('Reload')}</button></div></div>
-          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={taskId} browserText={browser?.messages?.map((m) => m.content)?.filter(Boolean)?.join('\n\n')} onResend={() => { closePopup(); setResendOpen(true); }} />}
+          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={taskId} onResend={() => { closePopup(); setResendOpen(true); }} />}
     </Modal>}
     {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={taskId} close={() => setResendOpen(false)} />}
   </div>;
@@ -434,7 +434,7 @@ function isSafeReadApproval(input: unknown) {
   return risk === 'metadataRead' || risk === 'contentRead' || risk === 'computeRead';
 }
 
-function ActivityPopupContent({ activity, approvalPending, running, onResend, browserText }: { activity: ToolActivity; approvalPending: boolean; running: boolean; taskId?: string; browserText?: string; onResend?: () => void }) {
+function ActivityPopupContent({ activity, approvalPending, running, onResend }: { activity: ToolActivity; approvalPending: boolean; running: boolean; taskId?: string; onResend?: () => void }) {
   const failed = activity.status === 'failed';
   const command = activityCommand(activity);
   const output = activityOutput(activity);
@@ -443,7 +443,7 @@ function ActivityPopupContent({ activity, approvalPending, running, onResend, br
   const diffView = activityDiffView(activity);
   const codeView = activityCodeView(activity);
   const canResend = !running && !approvalPending && Boolean(onResend);
-  const modelResponse = (activity.precedingText || browserText)?.trim();
+  const modelResponse = activity.precedingText?.trim();
   return <div className="activity-popup-content">
     {modelResponse && <section className="activity-model-response" aria-label={tr('Model response')} style={{ border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--surface-2)', padding: '12px', display: 'grid', gap: '6px' }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--muted)', fontSize: '11px', fontWeight: 600 }}>
