@@ -52,6 +52,7 @@ export function buildTaskTurns(events: TimelineEvent[], task: Task): TaskTurn[] 
     if (turn.status === 'completed') return;
     if (index === turns.length - 1 && task.status === 'running') turn.status = 'running';
     else if (task.status === 'failed') turn.status = 'failed';
+    else if (task.status === 'stopped') turn.status = 'stopped';
     else turn.status = 'incomplete';
   });
   return collapseChatGptFallbackTurns(turns);

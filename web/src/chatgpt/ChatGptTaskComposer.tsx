@@ -52,7 +52,8 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
   }, [extensionReady, resumeCompact]);
   const conversationUrl = bridge.data?.conversationUrl || undefined;
   const provider: 'chatgpt' | 'gemini' = conversationUrl?.startsWith('https://gemini.google.com/') ? 'gemini' : DEFAULT_PROVIDER;
-  const active = Boolean(bridge.data?.activeRequestId && ['queued', 'running', 'stop_requested'].includes(bridge.data.activeStatus ?? ''));
+  const taskIsRunning = bridge.data?.taskStatus === 'running';
+  const active = Boolean(bridge.data?.activeRequestId && ['queued', 'running', 'stop_requested'].includes(bridge.data.activeStatus ?? '') && taskIsRunning);
   const answerCompletedWaitingForUi = active && bridge.data?.taskStatus === 'completed' && chatGptReady !== true;
 
   useEffect(() => {
