@@ -543,7 +543,9 @@ async function executeToolLoop(owner, requestId, initialResult) {
     // After dispatch, only verify the request slot is still ours — the new observer hasn't had
     // time to find its user node yet, so checking observer.active here would be a false positive.
     if (!dispatched || activeRequest !== owner) { globalThis.ChatCmdToolBridge?.reset?.(); if (_dbg()) console.log('[ChatCMD ToolLoop] exit:no-dispatch-or-lost', { turn: _turn, requestId, dispatched, activeChanged: activeRequest !== owner }); return currentResult; }
-    globalThis.ChatCmdToolBridge?.reset?.();
+    // NOTE: Do NOT call reset() here. executedCallIds must persist across all turns of the tool
+    // loop so that any call ID dispatched in an earlier turn can never be re-dispatched — even if
+    // ChatGPT echoes a previous tool-call block in its next answer.
     // previousAnswer: the answer from the previous waitForAssistant call ('' on turn 1).
     // The monitor uses this to reject a stale answer that matches the previously consumed text.
     currentResult = await waitForAssistant(assistantCount, requestId, submittedReply, previousAnswer);

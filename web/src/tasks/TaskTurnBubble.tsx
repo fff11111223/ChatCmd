@@ -1,10 +1,11 @@
 import { subagentLabel, subagentTreeRows } from './subagentPresentation';
 import { TurnThinkingSources } from './TurnThinkingSources';
 import { browserThinking, isBrowserEvent, type BrowserThinking, type BrowserThought } from './chatGptThinking';
-import { BookOpen, Bot, CheckCircle2, ChevronDown, CircleAlert, CircleStop, Clock3, ExternalLink, FileCode2, FilePenLine, GitBranch, LoaderCircle, MessageSquareText, Search, TerminalSquare, Wrench } from 'lucide-react';
+import { BookOpen, Bot, CheckCircle2, ChevronDown, CircleAlert, CircleStop, Clock3, ExternalLink, FileCode2, FilePenLine, GitBranch, LoaderCircle, MessageSquareText, RotateCw, Send, Search, TerminalSquare, Wrench } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChatRichText } from './rich-text/ChatRichText';
 import { api } from '../api';
+import { dispatchChatGptRequest } from '../chatgptBridge';
 import { Modal } from '../components';
 import { appLocale, formatAppNumber, tr } from '../i18n';
 import { useRealtime } from '../realtime';
@@ -310,11 +311,11 @@ function TurnProcess({ blocks, taskId, onStop, browser }: { blocks: ReturnType<t
     </div>}
     {blocks.map((block) => block.type === 'progress'
       ? <ProgressMessage event={block.event} key={block.key} />
-      : <ActivityBatch activities={block.activities} taskId={taskId} onStop={onStop} key={block.key} />)}
+      : <ActivityBatch activities={block.activities} taskId={taskId} onStop={onStop} browser={browser} key={block.key} />)}
   </div>;
 }
 
-function ActivityBatch({ activities, taskId, onStop }: { activities: ToolActivity[]; taskId: string; onStop: (activity: ToolActivity) => void }) {
+function ActivityBatch({ activities, taskId, onStop, browser }: { activities: ToolActivity[]; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const last = activities.at(-1);
@@ -332,7 +333,7 @@ function ActivityBatch({ activities, taskId, onStop }: { activities: ToolActivit
   };
   return <section className="turn-activity-batch" aria-label={summarizeActivities(activities)}>
     <div className="turn-activity-summary" role="status"><Wrench aria-hidden="true" /><p>{summarizeActivities(activities)}</p></div>
-    <div ref={scrollRef} className="turn-activity-rows" onScroll={updateScrollPosition}>{activities.map((activity) => <ActivityRow activity={activity} taskId={taskId} onStop={onStop} key={activity.id} />)}</div>
+    <div ref={scrollRef} className="turn-activity-rows" onScroll={updateScrollPosition}>{activities.map((activity) => <ActivityRow activity={activity} taskId={taskId} onStop={onStop} browser={browser} key={activity.id} />)}</div>
   </section>;
 }
 
@@ -351,12 +352,13 @@ function RichText({ content }: { content: string }) {
   return <ChatRichText content={content} />;
 }
 
-function ActivityRow({ activity, taskId, onStop }: { activity: ToolActivity; taskId: string; onStop: (activity: ToolActivity) => void }) {
+function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActivity; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<TaskActivityDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [recentlyViewed, setRecentlyViewed] = useState(false);
+  const [resendOpen, setResendOpen] = useState(false);
   useEffect(() => { if (!recentlyViewed) return; const timer = window.setTimeout(() => setRecentlyViewed(false), 3000); return () => window.clearTimeout(timer); }, [recentlyViewed]);
   const closePopup = () => { setOpen(false); setRecentlyViewed(false); window.requestAnimationFrame(() => setRecentlyViewed(true)); };
   const fetchDetail = (showModal: boolean) => {
@@ -419,10 +421,12 @@ function ActivityRow({ activity, taskId, onStop }: { activity: ToolActivity; tas
         ? <div className="activity-popup-content"><div className="activity-detail-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div></div>
         : detailError
           ? <div className="activity-popup-content"><div className="activity-error-detail" role="alert"><div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Could not load tool details.')}</strong></div><div className="activity-error-message">{detailError}</div><button className="button secondary compact" type="button" onClick={loadDetail}>{tr('Reload')}</button></div></div>
-          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} />}
+          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={taskId} browserText={browser?.messages?.map((m) => m.content)?.filter(Boolean)?.join('\n\n')} onResend={() => { closePopup(); setResendOpen(true); }} />}
     </Modal>}
+    {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={taskId} close={() => setResendOpen(false)} />}
   </div>;
 }
+
 
 function isSafeReadApproval(input: unknown) {
   if (!input || typeof input !== 'object') return false;
@@ -430,7 +434,7 @@ function isSafeReadApproval(input: unknown) {
   return risk === 'metadataRead' || risk === 'contentRead' || risk === 'computeRead';
 }
 
-function ActivityPopupContent({ activity, approvalPending, running }: { activity: ToolActivity; approvalPending: boolean; running: boolean }) {
+function ActivityPopupContent({ activity, approvalPending, running, onResend, browserText }: { activity: ToolActivity; approvalPending: boolean; running: boolean; taskId?: string; browserText?: string; onResend?: () => void }) {
   const failed = activity.status === 'failed';
   const command = activityCommand(activity);
   const output = activityOutput(activity);
@@ -438,7 +442,18 @@ function ActivityPopupContent({ activity, approvalPending, running }: { activity
   const searchCodeViews = fsSearchCodeViews(activity);
   const diffView = activityDiffView(activity);
   const codeView = activityCodeView(activity);
+  const canResend = !running && !approvalPending && Boolean(onResend);
+  const modelResponse = (activity.precedingText || browserText)?.trim();
   return <div className="activity-popup-content">
+    {modelResponse && <section className="activity-model-response" aria-label={tr('Model response')} style={{ border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--surface-2)', padding: '12px', display: 'grid', gap: '6px' }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--muted)', fontSize: '11px', fontWeight: 600 }}>
+        <Bot aria-hidden="true" style={{ width: '14px', height: '14px' }} />
+        <span>{tr('Model response')}</span>
+      </header>
+      <div style={{ fontSize: '12px', lineHeight: 1.55, color: 'var(--text)', maxHeight: '180px', overflowY: 'auto' }}>
+        <RichText content={modelResponse} />
+      </div>
+    </section>}
     <div className="activity-command"><FileCode2 /><code>{command}</code></div>
     {inputDetails.length > 0 && <section className="activity-input-details" aria-label={tr('Tool input details')}><header><strong>{tr('Request details')}</strong><code>{activity.tool}</code></header><dl>{inputDetails.map((item) => <div key={`${item.label}:${item.value}`}><dt>{item.label}</dt><dd>{item.code ? <code>{item.value}</code> : item.value}</dd></div>)}</dl></section>}
     {failed && <div className="activity-error-detail" role="alert">
@@ -454,7 +469,113 @@ function ActivityPopupContent({ activity, approvalPending, running }: { activity
         : codeView
           ? <Suspense fallback={<pre tabIndex={0} aria-label={tr('Output of {command}', { command })}><code>{codeView.code}</code></pre>}><TaskCodeViewer {...codeView} label={tr('Output of {command}', { command })} /></Suspense>
           : <pre tabIndex={0} aria-label={tr('Output of {command}', { command })}><code>{output || (approvalPending ? tr('Waiting for your approval…') : running ? tr('Waiting for output…') : tr('Command produced no output.'))}</code></pre>}
+    {canResend && <div className="activity-popup-actions" style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+      <button type="button" className="button secondary compact" onClick={onResend}>
+        <RotateCw aria-hidden="true" style={{ width: '14px', height: '14px' }} />
+        <span>{tr('Resend tool result')}</span>
+      </button>
+    </div>}
   </div>;
+}
+
+function ResendToolResultModal({ activity, taskId, close }: { activity: ToolActivity; taskId: string; close: () => void }) {
+  const initialOutput = (() => {
+    if (typeof activity.output === 'string') return activity.output;
+    if (activity.output !== undefined && activity.output !== null) {
+      try { return JSON.stringify(activity.output, null, 2); } catch { return String(activity.output); }
+    }
+    return activity.errorMessage || activity.error || '';
+  })();
+  const [output, setOutput] = useState(initialOutput);
+  const [isOk, setIsOk] = useState(activity.status !== 'failed');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSend = async () => {
+    if (sending) return;
+    setSending(true);
+    setError('');
+    try {
+      const callId = activity.id || 'call_manual';
+      const toolName = activity.tool || 'tool';
+      const resultBlock = isOk
+        ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(output)}}\n\`\`\``
+        : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(output)}}\n\`\`\``;
+
+      const bridge = await api.chatGptBridge(taskId);
+      const conversationUrl = bridge.conversationUrl || undefined;
+      const provider = conversationUrl?.startsWith('https://gemini.google.com/') ? 'gemini' : 'chatgpt';
+
+      const request = await api.sendChatGptMessage(taskId, { model: 'Auto', content: resultBlock });
+      await dispatchChatGptRequest({
+        requestId: request.id,
+        submittedContent: request.submittedContent,
+        model: request.model || 'Auto',
+        provider,
+        conversationUrl,
+      });
+
+      close();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : tr('Failed to send tool result.'));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return <Modal title={tr('Confirm & Resend Tool Result')} description={`${activity.tool} (${activity.id})`} close={close} className="resend-tool-modal">
+    <div className="activity-popup-content" style={{ display: 'grid', gap: '14px', padding: '0 18px 18px' }}>
+      <div>
+        <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>{tr('Status')}</label>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+            <input type="radio" name="toolResultOk" checked={isOk} onChange={() => setIsOk(true)} />
+            <span>{tr('Success (ok: true)')}</span>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+            <input type="radio" name="toolResultOk" checked={!isOk} onChange={() => setIsOk(false)} />
+            <span>{tr('Failure (ok: false)')}</span>
+          </label>
+        </div>
+      </div>
+      <div>
+        <label htmlFor="resend-output-textarea" style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>
+          {isOk ? tr('Result content') : tr('Error message')}
+        </label>
+        <textarea
+          id="resend-output-textarea"
+          value={output}
+          onChange={(e) => setOutput(e.target.value)}
+          rows={10}
+          style={{
+            width: '100%',
+            fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+            fontSize: '11px',
+            lineHeight: 1.5,
+            padding: '10px',
+            borderRadius: '8px',
+            border: '1px solid var(--border)',
+            background: 'var(--surface-2)',
+            color: 'var(--text)',
+            resize: 'vertical',
+            boxSizing: 'border-box',
+          }}
+        />
+      </div>
+      {error && <div className="activity-error-detail" role="alert" style={{ padding: '8px 12px' }}>
+        <div className="activity-error-message">{error}</div>
+      </div>}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
+        <button type="button" className="button secondary" onClick={close} disabled={sending}>
+          {tr('Cancel')}
+        </button>
+        <button type="button" className="button primary" onClick={handleSend} disabled={sending}>
+          {sending ? <LoaderCircle className="spin" style={{ width: '14px', height: '14px' }} /> : <Send style={{ width: '14px', height: '14px' }} />}
+          <span>{sending ? tr('Sending…') : tr('Send to ChatGPT')}</span>
+        </button>
+      </div>
+    </div>
+  </Modal>;
 }
 
 function formatErrorDetails(value: unknown) { if (typeof value === 'string') return value; try { return JSON.stringify(value, null, 2); } catch { return String(value); } }

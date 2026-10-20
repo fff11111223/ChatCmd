@@ -19,6 +19,7 @@ export type ToolActivity = {
   startedAt: string;
   finishedAt?: string;
   turnId?: string;
+  precedingText?: string;
 };
 export type ProcessBlock =
   | { type: 'progress'; key: string; event: TimelineEvent }
@@ -60,6 +61,7 @@ export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
   const pending = new Map<string, ToolActivity>();
   const pendingByTool = new Map<string, ToolActivity[]>();
   let currentActivities: ToolActivity[] | null = null;
+  let lastSeenAgentText = '';
   for (const event of events) {
     if (event.type === 'tool_call') {
       const payload = payloadObject(event);
@@ -82,6 +84,7 @@ export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
         status: stringValue(payload.status) || 'started',
         startedAt: event.occurredAt,
         turnId: event.turnId,
+        precedingText: lastSeenAgentText || undefined,
       };
       if (!currentActivities) {
         currentActivities = [];
@@ -142,6 +145,7 @@ export function buildProcessBlocks(events: TimelineEvent[]): ProcessBlock[] {
     }
     if (isVisibleAgentMessage(event)) {
       currentActivities = null;
+      lastSeenAgentText = eventText(event);
       blocks.push({ type: 'progress', key: event.id, event });
     }
   }
