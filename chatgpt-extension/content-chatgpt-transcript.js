@@ -235,7 +235,16 @@
         if (start < 0 || end <= start) continue;
         const payload = text.slice(start, end + 1).trim();
         let parsed;
-        try { parsed = JSON.parse(payload); } catch { continue; }
+        try {
+          parsed = JSON.parse(payload);
+        } catch {
+          try {
+            const sanitized = payload.replace(/\\([^\/"\\bfnrtu])/g, '\\\\$1');
+            parsed = JSON.parse(sanitized);
+          } catch {
+            continue;
+          }
+        }
         if (typeof parsed?.id !== 'string' || !/^call_[\w-]+$/.test(parsed.id)
             || typeof parsed.tool !== 'string' || !parsed.arguments || typeof parsed.arguments !== 'object'
             || Array.isArray(parsed.arguments)) continue;

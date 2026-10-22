@@ -34,6 +34,7 @@ import {
   formatClockTime,
   fsSearchCodeViews,
   latestMessage,
+  extractNoteFromMessages,
   summarizeActivities,
   type ToolActivity,
 } from './taskTimeline';
@@ -103,7 +104,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
         {thinkingOpen && <div className="turn-thinking-content">
           <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'}>
           {subagents.length > 0 && <SubagentList agents={subagents} />}
-          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} browser={dualSources ? browser : null} />}
+          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} browser={browser} />}
           {isThinking && <div className="turn-thinking" role="status"><span>{tr('Thinking and preparing a response…')}</span></div>}
           {status === 'failed' && (agentLabel === 'ChatGPT' && isChatGptSendDisabledMessage(latestMessage(events))
             ? <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('Waiting to retry')}</strong><p>{tr('The ChatGPT send button is temporarily disabled. The system will retry in 10 seconds; you can cancel the send below.')}</p></div></div>
@@ -379,7 +380,7 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
   const failed = activity.status === 'failed';
   const stoppable = activity.status === 'started';
   const Icon = ended ? CircleStop : failed ? CircleAlert : activity.kind === 'read' ? BookOpen : activity.kind === 'search' ? Search : ['edit', 'create', 'delete', 'copy', 'move'].includes(activity.kind) ? FilePenLine : activity.kind === 'git' ? GitBranch : activity.kind === 'tool' ? Wrench : TerminalSquare;
-  const resolvedActivity: ToolActivity = detail ? { ...activity, ...detail, status: detail.status ?? activity.status } : activity;
+  const resolvedActivity: ToolActivity = detail ? { ...activity, ...detail, note: detail.note ?? activity.note, status: detail.status ?? activity.status } : activity;
 
   // Auto-fetch detail when approval is pending so we get the real arguments (cwd etc.) for the preview.
   useEffect(() => {
@@ -421,7 +422,7 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
         ? <div className="activity-popup-content"><div className="activity-detail-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div></div>
         : detailError
           ? <div className="activity-popup-content"><div className="activity-error-detail" role="alert"><div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Could not load tool details.')}</strong></div><div className="activity-error-message">{detailError}</div><button className="button secondary compact" type="button" onClick={loadDetail}>{tr('Reload')}</button></div></div>
-          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={taskId} onResend={() => { closePopup(); setResendOpen(true); }} />}
+          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={taskId} browser={browser} onResend={() => { closePopup(); setResendOpen(true); }} />}
     </Modal>}
     {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={taskId} close={() => setResendOpen(false)} />}
   </div>;
@@ -434,7 +435,7 @@ function isSafeReadApproval(input: unknown) {
   return risk === 'metadataRead' || risk === 'contentRead' || risk === 'computeRead';
 }
 
-function ActivityPopupContent({ activity, approvalPending, running, onResend }: { activity: ToolActivity; approvalPending: boolean; running: boolean; taskId?: string; onResend?: () => void }) {
+function ActivityPopupContent({ activity, approvalPending, running, browser, onResend }: { activity: ToolActivity; approvalPending: boolean; running: boolean; taskId?: string; browser?: BrowserThinking | null; onResend?: () => void }) {
   const failed = activity.status === 'failed';
   const command = activityCommand(activity);
   const output = activityOutput(activity);
@@ -444,16 +445,24 @@ function ActivityPopupContent({ activity, approvalPending, running, onResend }: 
   const codeView = activityCodeView(activity);
   const canResend = !running && !approvalPending && Boolean(onResend);
   const modelResponse = activity.precedingText?.trim();
+  const note = activity.note?.trim() || (browser?.messages ? extractNoteFromMessages(activity.id, browser.messages) : undefined);
   return <div className="activity-popup-content">
-    {modelResponse && <section className="activity-model-response" aria-label={tr('Model response')} style={{ border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--surface-2)', padding: '12px', display: 'grid', gap: '6px' }}>
+    <section className="activity-model-response" aria-label={tr('Model response')} style={{ border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--surface-2)', padding: '12px', display: 'grid', gap: '8px' }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--muted)', fontSize: '11px', fontWeight: 600 }}>
         <Bot aria-hidden="true" style={{ width: '14px', height: '14px' }} />
         <span>{tr('Model response')}</span>
+        {activity.id && <code style={{ marginLeft: 'auto', fontSize: '10px', opacity: 0.75, background: 'var(--surface-3, var(--surface-1))', padding: '2px 6px', borderRadius: '4px', fontFamily: 'ui-monospace, monospace' }}>{activity.id}</code>}
       </header>
-      <div style={{ fontSize: '12px', lineHeight: 1.55, color: 'var(--text)', maxHeight: '180px', overflowY: 'auto' }}>
+      {note ? <div style={{ fontSize: '12px', lineHeight: 1.5, color: 'var(--text)', background: 'var(--surface-3, var(--surface-1))', borderRadius: '6px', padding: '8px 10px', borderLeft: '3px solid var(--accent, var(--primary))' }}>
+        <strong style={{ fontSize: '10px', color: 'var(--muted)', display: 'block', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{tr('Note')}</strong>
+        {note}
+      </div> : (!modelResponse && <div style={{ fontSize: '11px', color: 'var(--muted)', fontStyle: 'italic', padding: '2px 0' }}>
+        {tr('No model commentary or note recorded for this call.')}
+      </div>)}
+      {modelResponse && <div style={{ fontSize: '12px', lineHeight: 1.55, color: 'var(--text)', maxHeight: '180px', overflowY: 'auto' }}>
         <RichText content={modelResponse} />
-      </div>
-    </section>}
+      </div>}
+    </section>
     <div className="activity-command"><FileCode2 /><code>{command}</code></div>
     {inputDetails.length > 0 && <section className="activity-input-details" aria-label={tr('Tool input details')}><header><strong>{tr('Request details')}</strong><code>{activity.tool}</code></header><dl>{inputDetails.map((item) => <div key={`${item.label}:${item.value}`}><dt>{item.label}</dt><dd>{item.code ? <code>{item.value}</code> : item.value}</dd></div>)}</dl></section>}
     {failed && <div className="activity-error-detail" role="alert">

@@ -130,7 +130,29 @@
             candidate = candidate.slice(firstBrace, lastBrace + 1);
           }
         }
-        const obj = JSON.parse(candidate);
+        let obj;
+        try {
+          obj = JSON.parse(candidate);
+        } catch {
+          try {
+            obj = JSON.parse(candidate.replace(/\\/g, '\\\\'));
+          } catch {
+            obj = null;
+          }
+        }
+        if (!obj || typeof obj !== 'object') {
+          const idMatch = candidate.match(/"id"\s*:\s*"([^"]+)"/);
+          const toolMatch = candidate.match(/"tool"\s*:\s*"([^"]+)"/);
+          if (idMatch && toolMatch) {
+            const noteMatch = candidate.match(/"note"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+            const note = noteMatch ? noteMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim() : '';
+            obj = { id: idMatch[1], tool: toolMatch[1], note, arguments: {} };
+          }
+        }
+        if (!obj) {
+          if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipped malformed block (could not parse JSON or extract id/tool)', { candidate: candidate.slice(0, 100) });
+          return;
+        }
         const id = String(obj.id || '').trim();
         const tool = String(obj.tool || '').trim();
         if (!id || !tool) {
@@ -142,9 +164,10 @@
           return;
         }
         seen.add(id);
-        calls.push({ id, tool, arguments: obj.arguments || {} });
+        const note = typeof obj.note === 'string' ? obj.note.trim() : '';
+        calls.push({ id, tool, note, arguments: obj.arguments || {} });
       } catch (err) {
-        if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipped block due to JSON parse error', { error: String(err?.message || err), reason: 'json_parse_error' });
+        if (_dbg()) console.log('[ChatCMD ToolBridge] parseToolCalls: skipped block due to unexpected error', { error: String(err?.message || err) });
       }
     }
 
@@ -292,6 +315,7 @@
         requestId,
         callId: call.id,
         tool: call.tool,
+        note: call.note || undefined,
         arguments: call.arguments,
       }).then(resolve).catch(reject);
     });

@@ -21,6 +21,7 @@ const BLOCKED_TOOLS: &[&str] = &[
     "agent_user_message",
     "agent_completed",
     "agent_observation",
+    "agent_subagent_start",
     "subagent_create",
     "subagent_result",
 ];
@@ -97,6 +98,10 @@ pub(super) struct BrowserToolCall {
 
     /// The MCP tool name to execute.
     pub tool: String,
+
+    /// Optional note provided by the model for this tool call.
+    #[serde(default)]
+    pub note: Option<String>,
 
     /// Tool arguments -- must be a JSON object.
     #[serde(default)]
@@ -226,7 +231,32 @@ pub(super) async fn browser_tool_call(
     .await
     .map_err(db_problem)?;
 
+    let note_to_save = match input.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => Some(n.to_owned()),
+        None => {
+            let think_payload: Option<String> = sqlx::query_scalar(
+                "SELECT payload_json FROM timeline_events WHERE task_id=? AND kind='chatgpt_think' ORDER BY created_at_ms DESC LIMIT 1",
+            )
+            .bind(&task_id)
+            .fetch_optional(state.repository.pool())
+            .await
+            .ok()
+            .flatten();
+            think_payload.and_then(|p| crate::api::task_views::extract_note_for_call_from_think_json(call_id, &p))
+        }
+    };
+
     if let Some(payload_json) = existing_result {
+        if let Some(ref note) = note_to_save {
+            let _ = sqlx::query(
+                "UPDATE timeline_events SET payload_json = json_set(payload_json, '$.note', ?) WHERE task_id = ? AND json_extract(payload_json, '$.activityId') = ?",
+            )
+            .bind(note)
+            .bind(&task_id)
+            .bind(call_id)
+            .execute(state.repository.pool())
+            .await;
+        }
         let stored: Value = serde_json::from_str(&payload_json).unwrap_or(Value::Null);
         let result_content = guard_command_run_result_for_ai(
             tool,
@@ -283,6 +313,17 @@ pub(super) async fn browser_tool_call(
     //    are all invoked through this single path.
     let result = state.runtime.call(tool, context, input.arguments).await;
 
+    if let Some(ref note) = note_to_save {
+        let _ = sqlx::query(
+            "UPDATE timeline_events SET payload_json = json_set(payload_json, '$.note', ?) WHERE task_id = ? AND json_extract(payload_json, '$.activityId') = ?",
+        )
+        .bind(note)
+        .bind(&task_id)
+        .bind(call_id)
+        .execute(state.repository.pool())
+        .await;
+    }
+
     match result {
         Ok(value) => Ok(Json(json!({
             "ok": true,
@@ -318,6 +359,25 @@ mod tests {
     use super::*;
     use std::fs;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn browser_tool_call_rejects_subagent_start() {
+        let (host, _agent_id, directory) = crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(host.test_app_state(directory.path().join("chatcmd.db").display().to_string()));
+        let payload = BrowserToolCall {
+            request_id: "request-subagent-blocked".to_string(),
+            call_id: "call-subagent-blocked".to_string(),
+            tool: "agent_subagent_start".to_string(),
+            note: None,
+            arguments: json!({"name": "test", "request": "test"}),
+        };
+
+        let error = browser_tool_call(axum::extract::State(state), Json(payload))
+            .await
+            .expect_err("subagent registration must not bypass worker dispatch");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.title, "Restricted tool");
+    }
 
     #[tokio::test]
     async fn browser_tool_call_includes_resident_footer_when_skill_has_resident() {
@@ -376,6 +436,7 @@ Core instructions
             request_id: request_id.to_string(),
             call_id: "call_001".to_string(),
             tool: "fs_read_text".to_string(),
+            note: None,
             arguments: json!({ "path": directory.path().join("chatcmd.db").to_string_lossy().to_string() }),
         };
         let response = browser_tool_call(axum::extract::State(state.clone()), Json(payload))
@@ -391,6 +452,7 @@ Core instructions
             request_id: request_id.to_string(),
             call_id: "call_002".to_string(),
             tool: "fs_read_text".to_string(),
+            note: None,
             arguments: json!({ "path": "non-existent-file-path-xyz" }),
         };
         let err_response = browser_tool_call(axum::extract::State(state.clone()), Json(payload_err))
@@ -439,6 +501,7 @@ Core instructions
             request_id: request_id.to_string(),
             call_id: "call_010".to_string(),
             tool: "fs_read_text".to_string(),
+            note: None,
             arguments: json!({ "path": "non-existent" }),
         };
         let response = browser_tool_call(axum::extract::State(state.clone()), Json(payload))

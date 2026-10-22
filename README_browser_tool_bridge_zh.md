@@ -194,8 +194,11 @@ Tool Bridge **完全走現有的 ChatCMD 授權流程**，沒有任何繞過：
 - `agent_user_message`
 - `agent_completed`
 - `agent_observation`
+- `agent_subagent_start`
 - `subagent_create`
 - `subagent_result`
+
+`agent_subagent_start` 也在後端 `BLOCKED_TOOLS` 清單中；即使一般工具授權已通過，仍不能經由 Browser Tool Bridge 直接呼叫。需要建立或派發子代理時，應使用正式的 MCP 子代理流程，而不是嘗試透過此橋接呼叫。
 
 若 ChatGPT 嘗試呼叫這些工具，Backend 會回傳 `400 Restricted tool` 錯誤，Extension 會把錯誤格式化為 `tool_result` 回傳給 ChatGPT。
 

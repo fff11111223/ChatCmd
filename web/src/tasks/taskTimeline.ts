@@ -3,7 +3,7 @@ import { appLocale, formatAppNumber, tr } from '../i18n';
 import type { Task, TaskTurn, TimelineEvent } from '../types';
 import { collapseChatGptFallbackTurns } from './chatGptTurnPreference';
 import { formatToolOutput } from './taskToolOutput';
-import type { BrowserThinking } from './chatGptThinking';
+import type { BrowserThinking, BrowserThought } from './chatGptThinking';
 
 export type ActivityKind = 'read' | 'search' | 'edit' | 'create' | 'delete' | 'copy' | 'move' | 'git' | 'command' | 'tool';
 export type ToolActivity = {
@@ -21,6 +21,8 @@ export type ToolActivity = {
   finishedAt?: string;
   turnId?: string;
   precedingText?: string;
+  /** The model's note/annotation for this tool call, extracted from the chatcmd_tool_call JSON block. */
+  note?: string;
 };
 export type ProcessBlock =
   | { type: 'progress'; key: string; event: TimelineEvent }
@@ -58,6 +60,117 @@ export function buildTaskTurns(events: TimelineEvent[], task: Task): TaskTurn[] 
   return collapseChatGptFallbackTurns(turns);
 }
 
+export function extractNoteForCallId(callId: string, text: string): string | undefined {
+  if (!callId || !text || !text.includes(callId)) return undefined;
+
+  let searchIndex = 0;
+  while (searchIndex < text.length) {
+    const idPos = text.indexOf(callId, searchIndex);
+    if (idPos === -1) break;
+
+    // Look backwards from idPos for the opening '{' of this JSON object
+    let braceStart = -1;
+    for (let i = idPos - 1; i >= Math.max(0, idPos - 2000); i--) {
+      if (text[i] === '{') {
+        braceStart = i;
+        break;
+      }
+    }
+
+    if (braceStart !== -1) {
+      // Find matching closing '}' using balanced count with string tracking
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      let braceEnd = -1;
+
+      for (let i = braceStart; i < text.length && i < braceStart + 50000; i++) {
+        const ch = text[i];
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (ch === '\\' && inString) {
+          escape = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+
+        if (ch === '{') {
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            braceEnd = i;
+            break;
+          }
+        }
+      }
+
+      if (braceEnd !== -1) {
+        const jsonCandidate = text.slice(braceStart, braceEnd + 1);
+
+        try {
+          const parsed = JSON.parse(jsonCandidate) as Record<string, unknown>;
+          if (parsed.id === callId && typeof parsed.note === 'string' && parsed.note.trim()) {
+            return parsed.note.trim();
+          }
+        } catch {
+          // If JSON.parse fails (e.g. unescaped Windows paths \f, \u in arguments), use regex fallback
+          const noteMatch = jsonCandidate.match(/"note"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (noteMatch && noteMatch[1]) {
+            const rawNote = noteMatch[1];
+            const unescaped = rawNote
+              .replace(/\\n/g, '\n')
+              .replace(/\\r/g, '')
+              .replace(/\\t/g, '\t')
+              .replace(/\\"/g, '"')
+              .replace(/\\\\/g, '\\')
+              .trim();
+            if (unescaped) return unescaped;
+          }
+        }
+      }
+    }
+
+    // Direct regex fallback around idPos: within +/- 2000 chars of idPos
+    const startWindow = Math.max(0, idPos - 1000);
+    const endWindow = Math.min(text.length, idPos + 2000);
+    const windowText = text.slice(startWindow, endWindow);
+    const noteMatch = windowText.match(/"note"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (noteMatch && noteMatch[1]) {
+      const rawNote = noteMatch[1];
+      const unescaped = rawNote
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\')
+        .trim();
+      if (unescaped) return unescaped;
+    }
+
+    searchIndex = idPos + callId.length;
+  }
+
+  return undefined;
+}
+
+export function extractNoteFromMessages(callId: string, messages?: BrowserThought[]): string | undefined {
+  if (!callId || !messages || !messages.length) return undefined;
+  for (let i = 0; i < messages.length; i++) {
+    const content = messages[i]?.content;
+    if (!content || !content.includes(callId)) continue;
+    const note = extractNoteForCallId(callId, content);
+    if (note) return note;
+  }
+  return undefined;
+}
+
 export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThinking | null): ProcessBlock[] {
   const blocks: ProcessBlock[] = [];
   const pending = new Map<string, ToolActivity>();
@@ -74,33 +187,56 @@ export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThi
       if (existing) {
         existing.status = stringValue(payload.status) || existing.status;
         if (payload.input !== undefined) existing.input = payload.input;
+        if (payload.note && !existing.note) existing.note = stringValue(payload.note);
         const stopReason = stringValue(payload.stopReason);
         if (stopReason) existing.error = tr('Stop reason: {reason}', { reason: stopReason });
         continue;
       }
       let precedingMessage = lastSeenAgentText;
+      let toolNote: string | undefined = stringValue(payload.note) || undefined;
+      if (!toolNote && browser?.messages?.length) {
+        toolNote = extractNoteFromMessages(activityId, browser.messages);
+      }
+      if (!toolNote) {
+        for (const ev of events) {
+          const evPayload = payloadObject(ev);
+          if (Array.isArray(evPayload.messages)) {
+            for (const m of evPayload.messages as Array<{ content?: string }>) {
+              if (m?.content && m.content.includes(activityId)) {
+                toolNote = extractNoteForCallId(activityId, m.content);
+                if (toolNote) break;
+              }
+            }
+          }
+          if (toolNote) break;
+          const text = eventText(ev);
+          if (text && text.includes(activityId)) {
+            toolNote = extractNoteForCallId(activityId, text);
+            if (toolNote) break;
+          }
+        }
+      }
       if (!precedingMessage && browser?.messages?.length) {
         for (let i = 0; i < browser.messages.length; i++) {
           const msg = browser.messages[i];
-          if (msg.content.includes(activityId) || msg.content.includes(tool)) {
-            // Check if there is prose before the tool call in the same message.
-            // Match the tool call opening fence or label.
-            const fenceMatch = msg.content.match(/`{1,}\s*chatcmd_tool_call\b/i);
-            const callIndex = fenceMatch ? fenceMatch.index! : msg.content.indexOf(activityId);
-            if (callIndex > 0) {
-              const textBefore = msg.content.slice(0, callIndex)
-                .replace(/`{1,}\s*chatcmd_tool_call[\s\S]*$/, '')
-                .trim();
-              if (textBefore) {
-                precedingMessage = textBefore;
-                break;
-              }
+          if (!msg.content) continue;
+          const idPos = msg.content.indexOf(activityId);
+          if (idPos > 0) {
+            const textBefore = msg.content.slice(0, idPos);
+            const fenceMatch = textBefore.search(/`{1,}\s*chatcmd_tool_call\b|\bchatcmd_tool_call\b/i);
+            const blockStart = fenceMatch !== -1 ? fenceMatch : textBefore.lastIndexOf('{');
+            const prose = (blockStart > 0 ? textBefore.slice(0, blockStart) : textBefore)
+              .replace(/`{1,}\s*chatcmd_tool_call[\s\S]*$/, '')
+              .replace(/`{1,}$/, '')
+              .trim();
+            if (prose) {
+              precedingMessage = prose;
+              break;
             }
-            // If this message contains only the tool call or the text before was empty,
-            // check the immediately preceding message(s) for commentary/prose.
+          }
+          if (msg.content.includes(activityId) || msg.content.includes(tool)) {
             for (let prevIdx = i - 1; prevIdx >= 0; prevIdx--) {
               const prev = browser.messages[prevIdx];
-              // Skip messages that are themselves tool call blocks or tool results
               if (prev?.content && !prev.content.includes('chatcmd_tool_call') && !prev.content.includes('chatcmd_tool_result')) {
                 precedingMessage = prev.content.trim();
                 break;
@@ -110,7 +246,6 @@ export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThi
           }
         }
       }
-      // Sanitize precedingMessage: if it still has trailing backticks, protocol tags or broken JSON, strip them.
       if (precedingMessage) {
         precedingMessage = precedingMessage
           .replace(/`{1,}\s*chatcmd_tool_call[\s\S]*$/i, '')
@@ -127,6 +262,7 @@ export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThi
         startedAt: event.occurredAt,
         turnId: event.turnId,
         precedingText: precedingMessage || undefined,
+        note: toolNote,
       };
       if (!currentActivities) {
         currentActivities = [];

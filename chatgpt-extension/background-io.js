@@ -289,6 +289,7 @@ async function handleToolCall(message) {
       requestId: message.requestId,
       callId: message.callId,
       tool: message.tool,
+      note: message.note || undefined,
       arguments: message.arguments || {},
     }),
   });

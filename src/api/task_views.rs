@@ -205,6 +205,9 @@ pub(crate) async fn task_activity(
             if let Some(value) = payload.get("input") {
                 detail.insert("input".to_owned(), value.clone());
             }
+            if let Some(value) = payload.get("note") {
+                detail.insert("note".to_owned(), value.clone());
+            }
         }
         if kind == "tool_result" {
             if let Some(value) = payload.get("output") {
@@ -304,6 +307,31 @@ pub(crate) async fn task_activity(
                     "artifactTruncated".to_owned(),
                     Value::Bool(artifact_truncated),
                 );
+            }
+        }
+    }
+    if detail.get("note").is_none() {
+        if let Ok(think_rows) = sqlx::query(
+            "SELECT payload_json FROM timeline_events WHERE task_id=? AND kind='chatgpt_think' ORDER BY created_at_ms DESC",
+        )
+        .bind(&id)
+        .fetch_all(state.repository.pool())
+        .await
+        {
+            for row in think_rows {
+                let payload_str = row.get::<String, _>("payload_json");
+                if let Some(note) = extract_note_for_call_from_think_json(&activity_id, &payload_str) {
+                    detail.insert("note".to_owned(), Value::String(note.clone()));
+                    let _ = sqlx::query(
+                        "UPDATE timeline_events SET payload_json = json_set(payload_json, '$.note', ?) WHERE task_id = ? AND json_extract(payload_json, '$.activityId') = ?",
+                    )
+                    .bind(&note)
+                    .bind(&id)
+                    .bind(&activity_id)
+                    .execute(state.repository.pool())
+                    .await;
+                    break;
+                }
             }
         }
     }
@@ -682,3 +710,174 @@ fn compact_tool_payload(kind: &str, payload: Value) -> Value {
     }
     Value::Object(object)
 }
+
+pub(crate) fn extract_note_for_call_from_think_json(call_id: &str, payload_json: &str) -> Option<String> {
+    if !payload_json.contains(call_id) {
+        return None;
+    }
+    let payload = serde_json::from_str::<Value>(payload_json).ok()?;
+    let messages = payload.get("messages")?.as_array()?;
+    for msg in messages {
+        let content = msg.get("content")?.as_str()?;
+        if !content.contains(call_id) {
+            continue;
+        }
+        if let Some(note) = extract_note_for_call_from_text(call_id, content) {
+            return Some(note);
+        }
+    }
+    None
+}
+
+pub(crate) fn extract_note_for_call_from_text(call_id: &str, text: &str) -> Option<String> {
+    if !text.contains(call_id) {
+        return None;
+    }
+    let mut search_idx = 0;
+    while let Some(pos) = text[search_idx..].find(call_id) {
+        let id_pos = search_idx + pos;
+        let search_start = id_pos.saturating_sub(2000);
+        let prefix = &text[search_start..id_pos];
+        if let Some(rel_brace) = prefix.rfind('{') {
+            let brace_start = search_start + rel_brace;
+            let mut depth = 0;
+            let mut in_string = false;
+            let mut escape = false;
+            let mut brace_end = None;
+            for (idx, ch) in text[brace_start..].char_indices() {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                if ch == '\\' && in_string {
+                    escape = true;
+                    continue;
+                }
+                if ch == '"' {
+                    in_string = !in_string;
+                    continue;
+                }
+                if !in_string {
+                    if ch == '{' {
+                        depth += 1;
+                    } else if ch == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            brace_end = Some(brace_start + idx);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(end) = brace_end {
+                let json_slice = &text[brace_start..=end];
+                if let Ok(val) = serde_json::from_str::<Value>(json_slice) {
+                    if val.get("id").and_then(Value::as_str) == Some(call_id) {
+                        if let Some(note) = val.get("note").and_then(Value::as_str) {
+                            let trimmed = note.trim();
+                            if !trimmed.is_empty() {
+                                return Some(trimmed.to_owned());
+                            }
+                        }
+                    }
+                }
+                if let Some(note) = extract_note_by_regex(json_slice) {
+                    return Some(note);
+                }
+            }
+        }
+
+        let window_start = id_pos.saturating_sub(1000);
+        let window_end = (id_pos + 2000).min(text.len());
+        if let Some(note) = extract_note_by_regex(&text[window_start..window_end]) {
+            return Some(note);
+        }
+
+        search_idx = id_pos + call_id.len();
+    }
+    None
+}
+
+fn extract_note_by_regex(text: &str) -> Option<String> {
+    let note_idx = text.find("\"note\"")?;
+    let after_note = &text[note_idx + 6..];
+    let colon_idx = after_note.find(':')?;
+    let after_colon = after_note[colon_idx + 1..].trim_start();
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+    let string_content = &after_colon[1..];
+    let mut result = String::new();
+    let mut escape = false;
+    for ch in string_content.chars() {
+        if escape {
+            match ch {
+                'n' => result.push('\n'),
+                'r' => {},
+                't' => result.push('\t'),
+                '\\' => result.push('\\'),
+                '"' => result.push('"'),
+                other => {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+            escape = false;
+        } else if ch == '\\' {
+            escape = true;
+        } else if ch == '"' {
+            break;
+        } else {
+            result.push(ch);
+        }
+    }
+    let trimmed = result.trim();
+    if !trimmed.is_empty() {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_note_for_call() {
+        let content = r#"
+```chatcmd_tool_call
+{
+  "id": "call_488",
+  "tool": "fs_read_text",
+  "arguments": {
+    "path": "src/api/chatgpt_browser_tools.rs"
+  },
+  "note": "核對完整封鎖清單 | 確認子代理工具是否被明確封鎖"
+}
+```
+"#;
+        let note = extract_note_for_call_from_text("call_488", content);
+        assert_eq!(note.as_deref(), Some("核對完整封鎖清單 | 確認子代理工具是否被明確封鎖"));
+    }
+
+    #[test]
+    fn test_extract_note_windows_path_fallback() {
+        let content = r#"
+```chatcmd_tool_call
+{
+  "id": "call_489",
+  "tool": "fs_read_text",
+  "arguments": {
+    "path": "d:\frank\gemini\ChatCmd\test.rs"
+  },
+  "note": "測試路徑逃逸"
+}
+```
+"#;
+        let note = extract_note_for_call_from_text("call_489", content);
+        assert_eq!(note.as_deref(), Some("測試路徑逃逸"));
+    }
+}
+
