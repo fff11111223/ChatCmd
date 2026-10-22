@@ -230,6 +230,12 @@ impl RuntimeHost {
                 for token in command_tokens(&cmd_text) {
                     // Strip surrounding quotes if present.
                     let token = token.trim_matches(|c| c == '"' || c == '\'');
+                    // After quote-stripping, also strip trailing shell punctuation that may
+                    // appear after a closing quote but before whitespace (e.g. 'D:\path'; or
+                    // 'D:\path'| or 'D:\path'&&).  These characters are not part of the path.
+                    let token = token.trim_end_matches(|c: char| {
+                        matches!(c, ';' | '|' | '&' | ',' | ')' | '(' | '`' | '\'' | '"')
+                    });
                     if looks_like_absolute_path(token) {
                         let p = std::path::Path::new(token);
                         if validate_path_within_projects(p, &canonical_projects).is_err() {

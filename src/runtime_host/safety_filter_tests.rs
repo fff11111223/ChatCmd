@@ -163,3 +163,45 @@ fn test_check_paths_within_multiple_projects() {
     let args_outside = serde_json::json!({ "path": outside_file.to_string_lossy().to_string() });
     assert!(check_path_within_projects(&args_outside, &folders).is_err());
 }
+
+/// Regression test: a quoted PowerShell path followed immediately by ';' (e.g.
+/// `Set-Location 'D:\frank\REA'; Write-Output ...`) was previously extracted
+/// as the token `'D:\frank\REA';`, and after quote-stripping the trailing `;`
+/// remained, producing `D:\frank\REA';` which failed the path-within-project
+/// check even though the path was valid.
+#[test]
+fn test_command_tokens_quoted_path_with_trailing_semicolon() {
+    use std::path::Path;
+
+    let temp = tempdir().expect("tempdir");
+    let project_dir = temp.path().join("REA");
+    fs::create_dir_all(&project_dir).expect("create project dir");
+
+    let canonical_project = strip_verbatim_prefix(
+        &project_dir
+            .canonicalize()
+            .unwrap_or_else(|_| project_dir.to_path_buf()),
+    );
+    let canonical_projects = vec![canonical_project.clone()];
+
+    let project_str = canonical_project.to_string_lossy().to_string();
+
+    // Simulate the exact pattern from the bug report:
+    // Set-Location 'D:\frank\REA'; Write-Output '=== ZIP FILE ==='
+    let cmd = format!("Set-Location '{project_str}'; Write-Output '=== ZIP FILE ==='");
+
+    for token in command_tokens(&cmd) {
+        // Strip surrounding quotes, then strip trailing shell punctuation — same as safety_filter.rs
+        let token = token.trim_matches(|c| c == '"' || c == '\'');
+        let token = token.trim_end_matches(|c: char| {
+            matches!(c, ';' | '|' | '&' | ',' | ')' | '(' | '`' | '\'' | '"')
+        });
+        if looks_like_absolute_path(token) {
+            let p = Path::new(token);
+            assert!(
+                validate_path_within_projects(p, &canonical_projects).is_ok(),
+                "Path '{token}' should be within project '{project_str}'"
+            );
+        }
+    }
+}
