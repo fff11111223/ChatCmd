@@ -22,19 +22,27 @@ const schema: SanitizeOptions = {
 type TextNode = { value?: string; children?: TextNode[] };
 function textContent(node: TextNode): string { return node.value ?? node.children?.map(textContent).join('') ?? ''; }
 
-function CodeBlock({ node, children, labels, ...props }: ComponentProps<'pre'> & ExtraProps & { labels: RichTextLabels }) {
+function CodeBlock({ node, children, labels, onRunToolCall, ...props }: ComponentProps<'pre'> & ExtraProps & { labels: RichTextLabels; onRunToolCall?: (json: string) => void }) {
   const codeNode = node?.children.find((child) => child.type === 'element' && child.tagName === 'code');
   const classes = codeNode?.type === 'element' ? codeNode.properties.className : [];
   const language = (Array.isArray(classes) ? classes : []).map(String).find((name) => name.startsWith('language-'))?.slice(9);
   const text = node ? textContent(node).replace(/\n$/, '') : '';
   return <div className="chat-code-block">
-    <div className="chat-code-toolbar"><span>{language || labels.code}</span><CopyTextButton text={text} labels={labels} /></div>
+    <div className="chat-code-toolbar"><span>{language || labels.code}</span>
+      {language === 'chatcmd_tool_call' && onRunToolCall && (
+        <button type="button" className="chat-code-rerun-btn" title={labels.rerunToolCall} onClick={() => onRunToolCall(text)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <span>{labels.rerunToolCall}</span>
+        </button>
+      )}
+      <CopyTextButton text={text} labels={labels} />
+    </div>
     <pre {...props} tabIndex={0}>{children}</pre>
   </div>;
 }
 
-export function MarkdownContent({ content, vi, extraRemark = [], extraRehype = [] }: {
-  content: string; vi: boolean; extraRemark?: NonNullable<Options['remarkPlugins']>; extraRehype?: NonNullable<Options['rehypePlugins']>;
+export function MarkdownContent({ content, vi, onRunToolCall, extraRemark = [], extraRehype = [] }: {
+  content: string; vi: boolean; onRunToolCall?: (json: string) => void; extraRemark?: NonNullable<Options['remarkPlugins']>; extraRehype?: NonNullable<Options['rehypePlugins']>;
 }) {
   const components = useMemo<Components>(() => {
     const labels = richTextLabels(vi);
@@ -45,10 +53,10 @@ export function MarkdownContent({ content, vi, extraRemark = [], extraRehype = [
       img: ({ node: _node, src, alt, ...props }) => typeof src === 'string' && /^https?:\/\//i.test(src)
         ? <img {...props} src={src} alt={alt || ''} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
         : <span className="chat-unavailable-image">{alt || labels.unavailableImage}</span>,
-      pre: (props) => <CodeBlock {...props} labels={labels} />,
+      pre: (props) => <CodeBlock {...props} labels={labels} onRunToolCall={onRunToolCall} />,
       table: ({ node: _node, children, ...props }) => <div className="chat-table-scroll" role="region" aria-label={labels.table} tabIndex={0}><table {...props}>{children}</table></div>,
     };
-  }, [vi]);
+  }, [vi, onRunToolCall]);
   const instanceId = useId();
   const prefix = `chat-rich-${instanceId.replace(/[^\w-]/g, '')}-`;
   const scopedSchema = useMemo(() => ({ ...schema, clobberPrefix: prefix }), [prefix]);

@@ -2,6 +2,7 @@
 export const richTextLabels = (vi: boolean) => vi ? {
   document: 'Tài liệu', email: 'Bản nháp email', recipient: 'Người nhận', copy: 'Sao chép', copied: 'Đã sao chép',
   copyFailed: 'Không sao chép được. Hãy chọn và sao chép nội dung.', code: 'Mã nguồn', source: 'Nguồn',
+  rerunToolCall: 'Gửi lại lệnh',
   fileSource: 'Nguồn tài liệu', missingSource: 'Chỉ có mã tham chiếu; bản ghi chưa chứa đường dẫn nguồn.',
   widget: 'Nội dung tương tác ChatGPT', missingWidget: 'Xem bản gốc trên ChatGPT; bản ghi chưa có dữ liệu để dựng widget.',
   unavailableLink: 'Bản ghi chưa có đường dẫn sử dụng được trong ChatCMD.', unavailableImage: 'Ảnh không có đường dẫn sử dụng được',
@@ -11,6 +12,7 @@ export const richTextLabels = (vi: boolean) => vi ? {
 } : {
   document: 'Document', email: 'Email draft', recipient: 'Recipient', copy: 'Copy', copied: 'Copied',
   copyFailed: 'Could not copy. Select and copy the content manually.', code: 'Code', source: 'Source',
+  rerunToolCall: 'Re-run tool call',
   fileSource: 'File source', missingSource: 'Only reference IDs are available; this transcript has no source URLs.',
   widget: 'ChatGPT interactive content', missingWidget: 'View the original on ChatGPT; widget data is not included in this transcript.',
   unavailableLink: 'This transcript has no usable ChatCMD link.', unavailableImage: 'Image URL unavailable',

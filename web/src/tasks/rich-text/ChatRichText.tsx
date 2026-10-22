@@ -10,8 +10,8 @@ import './chatRichText.css';
 
 const MathMarkdown = lazy(() => import('./MathMarkdown'));
 
-function Markdown({ content, vi }: { content: string; vi: boolean }) {
-  const plain = <MarkdownContent content={content} vi={vi} />;
+function Markdown({ content, vi, onRunToolCall }: { content: string; vi: boolean; onRunToolCall?: (json: string) => void }) {
+  const plain = <MarkdownContent content={content} vi={vi} onRunToolCall={onRunToolCall} />;
   return /(^|[^\\])\$|language-math/m.test(content)
     ? <Suspense fallback={plain}><MathMarkdown content={content} vi={vi} /></Suspense>
     : plain;
@@ -36,7 +36,7 @@ function WritingCard({ part, markdown, vi }: { part: WritingPart; markdown: stri
 }
 
 /** One sanitized renderer for user messages, progress, browser snapshots and final responses. */
-export function ChatRichText({ content }: { content: string }) {
+export function ChatRichText({ content, onRunToolCall }: { content: string; onRunToolCall?: (json: string) => void }) {
   const vi = appLocale().startsWith('vi');
   const parts = useMemo(() => {
     const references = new Map<string, number>();
@@ -44,5 +44,5 @@ export function ChatRichText({ content }: { content: string }) {
   }, [content, vi]);
   return <div className="chat-rich-text">{parts.map(({ part, markdown }) => part.kind === 'writing'
     ? <WritingCard part={part} markdown={markdown} vi={vi} key={part.start} />
-    : <Markdown content={markdown} vi={vi} key={part.start} />)}</div>;
+    : <Markdown content={markdown} vi={vi} onRunToolCall={onRunToolCall} key={part.start} />)}</div>;
 }

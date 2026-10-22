@@ -6,8 +6,8 @@ import type { BrowserThinking } from './chatGptThinking';
 import './turnThinkingSources.css';
 
 type Source = 'chatgpt' | 'chatcmd';
-export function TurnThinkingSources({ browser, hasMcp, running, children, enabled = true }: {
-  browser: BrowserThinking; hasMcp: boolean; running: boolean; children: ReactNode; enabled?: boolean;
+export function TurnThinkingSources({ browser, hasMcp, running, children, enabled = true, onRunToolCall }: {
+  browser: BrowserThinking; hasMcp: boolean; running: boolean; children: ReactNode; enabled?: boolean; onRunToolCall?: (json: string) => void;
 }) {
   const [choice, setChoice] = useState<{ source: Source; hadMcp: boolean } | null>(null);
   // The first meaningful MCP event switches the provisional view once. Subsequent user choices stick.
@@ -30,7 +30,7 @@ export function TurnThinkingSources({ browser, hasMcp, running, children, enable
         : (hasMcp ? 'Public ChatGPT page content, saved separately from MCP.' : 'Showing ChatGPT while no MCP content is available. This transcript is retained.')}</p>
       {browser.messages.length ? browser.messages.map((message, index) => {
         const live = running && !browser.completed && index === browser.messages.length - 1;
-        return <SmoothBrowserMessage key={message.id} kind={message.kind} content={message.content} live={live} revision={browser.revision} />;
+        return <SmoothBrowserMessage key={message.id} kind={message.kind} content={message.content} live={live} revision={browser.revision} onRunToolCall={onRunToolCall} />;
       }) : <div className="turn-source-empty" role="status">
         {running && <LoaderCircle className="spin" aria-hidden="true" />}
         <span>{vi ? (running ? 'Đang chờ nội dung hiển thị từ ChatGPT…' : 'Lượt này chưa có bản ghi từ trình duyệt.')
@@ -40,7 +40,7 @@ export function TurnThinkingSources({ browser, hasMcp, running, children, enable
   </div>;
 }
 
-function SmoothBrowserMessage({ kind, content, live, revision }: { kind: 'commentary' | 'answer'; content: string; live: boolean; revision: number }) {
+function SmoothBrowserMessage({ kind, content, live, revision, onRunToolCall }: { kind: 'commentary' | 'answer'; content: string; live: boolean; revision: number; onRunToolCall?: (json: string) => void }) {
   const innerRef = useRef<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {
@@ -54,7 +54,7 @@ function SmoothBrowserMessage({ kind, content, live, revision }: { kind: 'commen
 
   return <div className="turn-browser-message-shell">
     <div ref={innerRef} className={`turn-browser-message ${kind}${live ? ' live' : ''}`}>
-      <ChatRichText content={content} />
+      <ChatRichText content={content} onRunToolCall={onRunToolCall} />
     </div>
   </div>;
 }

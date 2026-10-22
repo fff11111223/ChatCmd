@@ -70,6 +70,21 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
   const fileChanges = response ? responseFileChanges(response.event) : [];
   const fileChangeTrackingIncomplete = response ? responseFileChangeTrackingIncomplete(response.event) : false;
 
+  const handleRerunToolCall = useCallback(async (json: string) => {
+    if (!taskId) return;
+    try {
+      const callBlock = `\`\`\`chatcmd_tool_call\n${json}\n\`\`\``;
+      const bridge = await api.chatGptBridge(taskId);
+      const conversationUrl = bridge.conversationUrl || undefined;
+      const provider = conversationUrl?.startsWith('https://gemini.google.com/') ? 'gemini' : 'chatgpt';
+      const request = await api.sendChatGptMessage(taskId, { model: 'Auto', content: callBlock });
+      await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model || 'Auto', provider, conversationUrl });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[ChatCMD] Re-run tool call failed:', err);
+    }
+  }, [taskId]);
+
   useEffect(() => {
     setThinkingOpen(!hasResponse);
   }, [hasResponse]);
@@ -102,7 +117,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
           <span><MessageSquareText aria-hidden="true" />{tr('Thinking')}</span><ChevronDown aria-hidden="true" />
         </button>
         {thinkingOpen && <div className="turn-thinking-content">
-          <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'}>
+          <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'} onRunToolCall={dualSources ? handleRerunToolCall : undefined}>
           {subagents.length > 0 && <SubagentList agents={subagents} />}
           {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} browser={browser} />}
           {isThinking && <div className="turn-thinking" role="status"><span>{tr('Thinking and preparing a response…')}</span></div>}
