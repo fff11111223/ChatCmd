@@ -7,6 +7,8 @@ import remarkGfm from 'remark-gfm';
 import { CopyTextButton } from './CopyTextButton';
 import { richTextLabels, type RichTextLabels } from './labels';
 
+import { useToolCallAction } from '../ToolCallActionContext';
+
 const schema: SanitizeOptions = {
   ...defaultSchema,
   tagNames: [...(defaultSchema.tagNames ?? []), 'u', 'mark'],
@@ -23,15 +25,17 @@ type TextNode = { value?: string; children?: TextNode[] };
 function textContent(node: TextNode): string { return node.value ?? node.children?.map(textContent).join('') ?? ''; }
 
 function CodeBlock({ node, children, labels, onRunToolCall, ...props }: ComponentProps<'pre'> & ExtraProps & { labels: RichTextLabels; onRunToolCall?: (json: string) => void }) {
+  const contextAction = useToolCallAction();
+  const effectiveRun = onRunToolCall ?? contextAction;
   const codeNode = node?.children.find((child) => child.type === 'element' && child.tagName === 'code');
   const classes = codeNode?.type === 'element' ? codeNode.properties.className : [];
   const language = (Array.isArray(classes) ? classes : []).map(String).find((name) => name.startsWith('language-'))?.slice(9);
   const text = node ? textContent(node).replace(/\n$/, '') : '';
   return <div className="chat-code-block">
     <div className="chat-code-toolbar"><span>{language || labels.code}</span>
-      {language === 'chatcmd_tool_call' && onRunToolCall && (
-        <button type="button" className="chat-code-rerun-btn" title={labels.rerunToolCall} onClick={() => onRunToolCall(text)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      {language === 'chatcmd_tool_call' && effectiveRun && (
+        <button type="button" className="chat-code-rerun-btn" title={labels.rerunToolCall} onClick={() => effectiveRun(text)}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           <span>{labels.rerunToolCall}</span>
         </button>
       )}

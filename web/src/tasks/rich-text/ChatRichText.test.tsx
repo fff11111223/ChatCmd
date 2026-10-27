@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ChatRichText } from './ChatRichText';
+import { ToolCallActionContext } from '../ToolCallActionContext';
 
 const poem = `:::writing{variant="document" id="58321" title="Một chút dịu dàng"} Chiều nghiêng qua cửa rất êm, Gió đem nỗi nhớ đặt bên vai người. Ngoài kia phố vẫn đầy vơi, Trong tim chỉ có một lời: thương em.
 
@@ -131,6 +132,35 @@ describe('Markdown, HTML and legacy BBCode', () => {
     expect(container.querySelector('.chat-writing-card, .chat-reference, .katex')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Copy|Sao chép/ }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(code));
+  });
+  it('renders re-run button for chatcmd_tool_call code blocks when onRunToolCall is provided', () => {
+    const onRun = vi.fn();
+    const toolCall = '```chatcmd_tool_call\n{"id":"call_104","tool":"command_run"}\n```';
+    render(<ChatRichText content={toolCall} onRunToolCall={onRun} />);
+    const btn = screen.getByRole('button', { name: /Re-run|Chạy lại/i });
+    expect(btn).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(onRun).toHaveBeenCalledWith('{"id":"call_104","tool":"command_run"}');
+  });
+  it('renders re-run button for chatcmd_tool_call code blocks when provided via ToolCallActionContext', () => {
+    const onRun = vi.fn();
+    const toolCall = '```chatcmd_tool_call\n{"id":"call_104","tool":"command_run"}\n```';
+    render(
+      <ToolCallActionContext.Provider value={onRun}>
+        <ChatRichText content={toolCall} />
+      </ToolCallActionContext.Provider>
+    );
+    const btn = screen.getByRole('button', { name: /Re-run|Chạy lại/i });
+    expect(btn).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(onRun).toHaveBeenCalledWith('{"id":"call_104","tool":"command_run"}');
+  });
+  it('renders re-run button even when content contains math variables like $log', () => {
+    const onRun = vi.fn();
+    const toolCallWithDollar = "$log = 'test';\n```chatcmd_tool_call\n{\"id\":\"call_104\",\"tool\":\"command_run\"}\n```";
+    render(<ChatRichText content={toolCallWithDollar} onRunToolCall={onRun} />);
+    const btn = screen.getByRole('button', { name: /Re-run|Chạy lại/i });
+    expect(btn).toBeInTheDocument();
   });
   it('supports BBCode code with embedded backticks without activating its content', () => {
     const { container } = render(<ChatRichText content={'[code=js]```\n[b]literal[/b]\n:::writing{} sample :::[/code]'} />);

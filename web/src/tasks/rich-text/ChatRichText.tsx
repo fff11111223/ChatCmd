@@ -13,7 +13,7 @@ const MathMarkdown = lazy(() => import('./MathMarkdown'));
 function Markdown({ content, vi, onRunToolCall }: { content: string; vi: boolean; onRunToolCall?: (json: string) => void }) {
   const plain = <MarkdownContent content={content} vi={vi} onRunToolCall={onRunToolCall} />;
   return /(^|[^\\])\$|language-math/m.test(content)
-    ? <Suspense fallback={plain}><MathMarkdown content={content} vi={vi} /></Suspense>
+    ? <Suspense fallback={plain}><MathMarkdown content={content} vi={vi} onRunToolCall={onRunToolCall} /></Suspense>
     : plain;
 }
 

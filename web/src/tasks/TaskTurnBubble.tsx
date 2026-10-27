@@ -41,6 +41,8 @@ import {
 
 const TaskCodeViewer = lazy(async () => ({ default: (await import('../TaskCodeViewer')).TaskCodeViewer }));
 
+import { ToolCallActionContext, useToolCallAction } from './ToolCallActionContext';
+
 export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Codex Agent' }: { turn: TaskTurn; taskId: string; subagents?: SubagentRun[]; agentLabel?: string }) {
   const events = turn.events ?? [];
   const completion = findCompletionSignal(events);
@@ -63,6 +65,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
   const headingId = `turn-${turn.id}`;
   const [stopTarget, setStopTarget] = useState<ToolActivity | null>(null);
   const [changeTarget, setChangeTarget] = useState<ToolActivity | null>(null);
+  const [resendTarget, setResendTarget] = useState<{ activity: ToolActivity; rawJson?: string } | null>(null);
   const hasResponse = Boolean(response);
   const [thinkingOpen, setThinkingOpen] = useState(() => !hasResponse);
   const hasMcp = subagents.length > 0 || activities.length > 0 || blocks.some((block) => block.type === 'progress') || Boolean(response && !isBrowserEvent(response.event));
@@ -70,26 +73,41 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
   const fileChanges = response ? responseFileChanges(response.event) : [];
   const fileChangeTrackingIncomplete = response ? responseFileChangeTrackingIncomplete(response.event) : false;
 
-  const handleRerunToolCall = useCallback(async (json: string) => {
-    if (!taskId) return;
+  const handleToolCallAction = useCallback((json: string) => {
+    let callId = '';
+    let toolName = 'tool';
+    let note = '';
+    let parsedInput: unknown = undefined;
     try {
-      const callBlock = `\`\`\`chatcmd_tool_call\n${json}\n\`\`\``;
-      const bridge = await api.chatGptBridge(taskId);
-      const conversationUrl = bridge.conversationUrl || undefined;
-      const provider = conversationUrl?.startsWith('https://gemini.google.com/') ? 'gemini' : 'chatgpt';
-      const request = await api.sendChatGptMessage(taskId, { model: 'Auto', content: callBlock });
-      await dispatchChatGptRequest({ requestId: request.id, submittedContent: request.submittedContent, model: request.model || 'Auto', provider, conversationUrl });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[ChatCMD] Re-run tool call failed:', err);
+      const obj = JSON.parse(json);
+      callId = String(obj.id || '').trim();
+      toolName = String(obj.tool || '').trim();
+      note = String(obj.note || '').trim();
+      parsedInput = obj.arguments;
+    } catch {
+      const idMatch = json.match(/"id"\s*:\s*"([^"]+)"/);
+      if (idMatch) callId = idMatch[1];
+      const toolMatch = json.match(/"tool"\s*:\s*"([^"]+)"/);
+      if (toolMatch) toolName = toolMatch[1];
     }
-  }, [taskId]);
+    const existing = activities.find((a) => a.id === callId);
+    const targetActivity: ToolActivity = existing ? { ...existing } : {
+      id: callId || 'call_manual',
+      tool: toolName || 'tool',
+      kind: 'command',
+      input: parsedInput,
+      status: 'completed',
+      note: note || undefined,
+      startedAt: new Date().toISOString(),
+    };
+    setResendTarget({ activity: targetActivity, rawJson: json });
+  }, [activities]);
 
   useEffect(() => {
     setThinkingOpen(!hasResponse);
   }, [hasResponse]);
 
-  return <div className="turn-item">
+  return <ToolCallActionContext.Provider value={handleToolCallAction}><div className="turn-item">
     {userMessage && <article className="turn-user-message">
       <header><strong>{tr('You')}</strong><BubbleTime value={userMessage.event.occurredAt} /></header>
       <div className="turn-user-content"><ChatRichText content={visibleUserMessage ?? ''} /></div>
@@ -117,9 +135,9 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
           <span><MessageSquareText aria-hidden="true" />{tr('Thinking')}</span><ChevronDown aria-hidden="true" />
         </button>
         {thinkingOpen && <div className="turn-thinking-content">
-          <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'} onRunToolCall={dualSources ? handleRerunToolCall : undefined}>
+          <TurnThinkingSources enabled={dualSources} browser={browser} hasMcp={hasMcp} running={status === 'running'} onRunToolCall={handleToolCallAction}>
           {subagents.length > 0 && <SubagentList agents={subagents} />}
-          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} browser={browser} />}
+          {(activities.length > 0 || blocks.some((block) => block.type === 'progress')) && <TurnProcess blocks={blocks} taskId={taskId} onStop={setStopTarget} browser={browser} onRunToolCall={handleToolCallAction} />}
           {isThinking && <div className="turn-thinking" role="status"><span>{tr('Thinking and preparing a response…')}</span></div>}
           {status === 'failed' && (agentLabel === 'ChatGPT' && isChatGptSendDisabledMessage(latestMessage(events))
             ? <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('Waiting to retry')}</strong><p>{tr('The ChatGPT send button is temporarily disabled. The system will retry in 10 seconds; you can cancel the send below.')}</p></div></div>
@@ -131,7 +149,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
         </div>}
       </section>}
       {status === 'completed' && response && <section className="turn-final-section">
-        <div className="turn-response"><div className="turn-response-label"><CheckCircle2 /> {tr('Final response')}</div><div className="turn-response-content"><RichText content={response.text} /></div></div>
+        <div className="turn-response"><div className="turn-response-label"><CheckCircle2 /> {tr('Final response')}</div><div className="turn-response-content"><RichText content={response.text} onRunToolCall={handleToolCallAction} /></div></div>
         {qualityReport && <CompletionQualityCard report={qualityReport} />}
         {fileChangeTrackingIncomplete && <div className="turn-warning" role="status"><CircleAlert /><div><strong>{tr('File change tracking was incomplete')}</strong><p>{tr('Some shell file events were dropped. The list below may not include every changed file.')}</p></div></div>}
         {fileChanges.length > 0 && <TurnFileChanges changes={fileChanges} onOpen={(activity) => setChangeTarget(activity)} />}
@@ -139,7 +157,8 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
     </article>
     {stopTarget && taskId && <StopActivityDialog taskId={taskId} activity={stopTarget} onClose={() => setStopTarget(null)} />}
     {changeTarget && <ActivityDiffModal activity={changeTarget} close={() => setChangeTarget(null)} />}
-  </div>;
+    {resendTarget && <ResendToolResultModal activity={resendTarget.activity} rawCallJson={resendTarget.rawJson} taskId={taskId} close={() => setResendTarget(null)} />}
+  </div></ToolCallActionContext.Provider>;
 }
 
 export type TurnFileChange = { path: string; fileName: string; extension: string; kind: 'added' | 'deleted' | 'modified' | 'moved' | 'directoryCreated'; additions: number | null; deletions: number | null; confidence: string; diffArtifactRef?: string; activity: ToolActivity };
@@ -305,7 +324,7 @@ export function subagentStatusText(agent: Pick<SubagentRun, 'attempt' | 'termina
   return `${statusLabel}${agent.attempt > 0 ? ` · ${tr('Attempt')} ${agent.attempt}` : ''}${agent.terminalReason ? ` · ${agent.terminalReason}` : ''}`;
 }
 
-function TurnProcess({ blocks, taskId, onStop, browser }: { blocks: ReturnType<typeof buildProcessBlocks>; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null }) {
+function TurnProcess({ blocks, taskId, onStop, browser, onRunToolCall }: { blocks: ReturnType<typeof buildProcessBlocks>; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null; onRunToolCall?: (json: string) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const last = blocks.at(-1);
@@ -323,10 +342,10 @@ function TurnProcess({ blocks, taskId, onStop, browser }: { blocks: ReturnType<t
   const chatMessages = browser?.messages ?? [];
   return <div ref={scrollRef} className="turn-activities turn-process" role="region" tabIndex={0} aria-label={tr('Agent progress')} onScroll={updateScrollPosition}>
     {chatMessages.length > 0 && <div className="turn-chatgpt-messages">
-      {chatMessages.map((msg) => <ChatGptMessage key={msg.id} message={msg} />)}
+      {chatMessages.map((msg) => <ChatGptMessage key={msg.id} message={msg} onRunToolCall={onRunToolCall} />)}
     </div>}
     {blocks.map((block) => block.type === 'progress'
-      ? <ProgressMessage event={block.event} key={block.key} />
+      ? <ProgressMessage event={block.event} onRunToolCall={onRunToolCall} key={block.key} />
       : <ActivityBatch activities={block.activities} taskId={taskId} onStop={onStop} browser={browser} key={block.key} />)}
   </div>;
 }
@@ -353,19 +372,20 @@ function ActivityBatch({ activities, taskId, onStop, browser }: { activities: To
   </section>;
 }
 
-function ProgressMessage({ event }: { event: TimelineEvent }) {
-  return <div className="turn-progress-message"><MessageSquareText aria-hidden="true" /><div className="turn-progress-content turn-response-content"><RichText content={eventText(event)} /></div><time dateTime={event.occurredAt}>{formatClockTime(event.occurredAt)}</time></div>;
+function ProgressMessage({ event, onRunToolCall }: { event: TimelineEvent; onRunToolCall?: (json: string) => void }) {
+  return <div className="turn-progress-message"><MessageSquareText aria-hidden="true" /><div className="turn-progress-content turn-response-content"><RichText content={eventText(event)} onRunToolCall={onRunToolCall} /></div><time dateTime={event.occurredAt}>{formatClockTime(event.occurredAt)}</time></div>;
 }
 
-function ChatGptMessage({ message }: { message: BrowserThought }) {
+function ChatGptMessage({ message, onRunToolCall }: { message: BrowserThought; onRunToolCall?: (json: string) => void }) {
   return <div className={`turn-chatgpt-message turn-chatgpt-${message.kind}`}>
     <Bot aria-hidden="true" />
-    <div className="turn-progress-content turn-response-content"><RichText content={message.content} /></div>
+    <div className="turn-progress-content turn-response-content"><RichText content={message.content} onRunToolCall={onRunToolCall} /></div>
   </div>;
 }
 
-function RichText({ content }: { content: string }) {
-  return <ChatRichText content={content} />;
+function RichText({ content, onRunToolCall }: { content: string; onRunToolCall?: (json: string) => void }) {
+  const contextAction = useToolCallAction();
+  return <ChatRichText content={content} onRunToolCall={onRunToolCall ?? contextAction} />;
 }
 
 function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActivity; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null }) {
@@ -502,7 +522,7 @@ function ActivityPopupContent({ activity, approvalPending, running, browser, onR
   </div>;
 }
 
-function ResendToolResultModal({ activity, taskId, close }: { activity: ToolActivity; taskId: string; close: () => void }) {
+function ResendToolResultModal({ activity, rawCallJson, taskId, close }: { activity: ToolActivity; rawCallJson?: string; taskId: string; close: () => void }) {
   const initialOutput = (() => {
     if (typeof activity.output === 'string') return activity.output;
     if (activity.output !== undefined && activity.output !== null) {
@@ -510,6 +530,8 @@ function ResendToolResultModal({ activity, taskId, close }: { activity: ToolActi
     }
     return activity.errorMessage || activity.error || '';
   })();
+  const [sendMode, setSendMode] = useState<'result' | 'call'>('result');
+  const [callJson, setCallJson] = useState(rawCallJson || '');
   const [output, setOutput] = useState(initialOutput);
   const [isOk, setIsOk] = useState(activity.status !== 'failed');
   const [sending, setSending] = useState(false);
@@ -522,9 +544,11 @@ function ResendToolResultModal({ activity, taskId, close }: { activity: ToolActi
     try {
       const callId = activity.id || 'call_manual';
       const toolName = activity.tool || 'tool';
-      const resultBlock = isOk
-        ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(output)}}\n\`\`\``
-        : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(output)}}\n\`\`\``;
+      const resultBlock = sendMode === 'call'
+        ? `\`\`\`chatcmd_tool_call\n${callJson}\n\`\`\``
+        : isOk
+          ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(output)}}\n\`\`\``
+          : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(output)}}\n\`\`\``;
 
       const bridge = await api.chatGptBridge(taskId);
       const conversationUrl = bridge.conversationUrl || undefined;
@@ -547,45 +571,89 @@ function ResendToolResultModal({ activity, taskId, close }: { activity: ToolActi
     }
   };
 
-  return <Modal title={tr('Confirm & Resend Tool Result')} description={`${activity.tool} (${activity.id})`} close={close} className="resend-tool-modal">
+  return <Modal title={sendMode === 'call' ? tr('Confirm & Resend Tool Call') : tr('Confirm & Resend Tool Result')} description={`${activity.tool} (${activity.id})`} close={close} className="resend-tool-modal">
     <div className="activity-popup-content" style={{ display: 'grid', gap: '14px', padding: '0 18px 18px' }}>
-      <div>
-        <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>{tr('Status')}</label>
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
-            <input type="radio" name="toolResultOk" checked={isOk} onChange={() => setIsOk(true)} />
-            <span>{tr('Success (ok: true)')}</span>
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
-            <input type="radio" name="toolResultOk" checked={!isOk} onChange={() => setIsOk(false)} />
-            <span>{tr('Failure (ok: false)')}</span>
-          </label>
+      {rawCallJson && (
+        <div>
+          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>{tr('Mode')}</label>
+          <div style={{ display: 'flex', gap: '16px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+              <input type="radio" name="resendMode" checked={sendMode === 'result'} onChange={() => setSendMode('result')} />
+              <span>{tr('Resend tool result')} (chatcmd_tool_result)</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+              <input type="radio" name="resendMode" checked={sendMode === 'call'} onChange={() => setSendMode('call')} />
+              <span>{tr('Re-run tool call')} (chatcmd_tool_call)</span>
+            </label>
+          </div>
         </div>
-      </div>
-      <div>
-        <label htmlFor="resend-output-textarea" style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>
-          {isOk ? tr('Result content') : tr('Error message')}
-        </label>
-        <textarea
-          id="resend-output-textarea"
-          value={output}
-          onChange={(e) => setOutput(e.target.value)}
-          rows={10}
-          style={{
-            width: '100%',
-            fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
-            fontSize: '11px',
-            lineHeight: 1.5,
-            padding: '10px',
-            borderRadius: '8px',
-            border: '1px solid var(--border)',
-            background: 'var(--surface-2)',
-            color: 'var(--text)',
-            resize: 'vertical',
-            boxSizing: 'border-box',
-          }}
-        />
-      </div>
+      )}
+      {sendMode === 'call' ? (
+        <div>
+          <label htmlFor="resend-call-textarea" style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>
+            {tr('Tool call JSON')}
+          </label>
+          <textarea
+            id="resend-call-textarea"
+            value={callJson}
+            onChange={(e) => setCallJson(e.target.value)}
+            rows={10}
+            style={{
+              width: '100%',
+              fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+              fontSize: '11px',
+              lineHeight: 1.5,
+              padding: '10px',
+              borderRadius: '8px',
+              border: '1px solid var(--border)',
+              background: 'var(--surface-2)',
+              color: 'var(--text)',
+              resize: 'vertical',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          <div>
+            <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>{tr('Status')}</label>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+                <input type="radio" name="toolResultOk" checked={isOk} onChange={() => setIsOk(true)} />
+                <span>{tr('Success (ok: true)')}</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+                <input type="radio" name="toolResultOk" checked={!isOk} onChange={() => setIsOk(false)} />
+                <span>{tr('Failure (ok: false)')}</span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label htmlFor="resend-output-textarea" style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>
+              {isOk ? tr('Result content') : tr('Error message')}
+            </label>
+            <textarea
+              id="resend-output-textarea"
+              value={output}
+              onChange={(e) => setOutput(e.target.value)}
+              rows={10}
+              style={{
+                width: '100%',
+                fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+                fontSize: '11px',
+                lineHeight: 1.5,
+                padding: '10px',
+                borderRadius: '8px',
+                border: '1px solid var(--border)',
+                background: 'var(--surface-2)',
+                color: 'var(--text)',
+                resize: 'vertical',
+                boxSizing: 'border-box',
+              }}
+            />
+          </div>
+        </>
+      )}
       {error && <div className="activity-error-detail" role="alert" style={{ padding: '8px 12px' }}>
         <div className="activity-error-message">{error}</div>
       </div>}
