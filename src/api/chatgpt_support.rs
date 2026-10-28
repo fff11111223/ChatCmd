@@ -151,6 +151,23 @@ pub(super) async fn task_for_scope(
         .map_err(db_problem)
 }
 
+/// Fallback scope lookup that finds any existing task for the conversation scope,
+/// regardless of which agent created it. Used in `bridge_started` to prevent a
+/// second task from being created when native capture already enrolled the turn
+/// and created a recorder task before `bridge_started` was called (race condition).
+pub(super) async fn task_for_scope_any_agent(
+    state: &Arc<AppState>,
+    scope: &str,
+    source: &str,
+) -> Result<Option<String>, Problem> {
+    sqlx::query_scalar("SELECT id FROM tasks WHERE conversation_scope_hash=? AND source=? ORDER BY created_at_ms,id LIMIT 1")
+        .bind(scope)
+        .bind(source)
+        .fetch_optional(state.repository.pool())
+        .await
+        .map_err(db_problem)
+}
+
 pub(super) async fn append_user_message(
     state: &Arc<AppState>,
     task_id: &str,

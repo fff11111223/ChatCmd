@@ -231,6 +231,11 @@ pub(super) async fn bridge_started(
         id
     } else if let Some(id) = task_for_scope(&state, &agent_id, &scope, source).await? {
         id
+    } else if let Some(id) = task_for_scope_any_agent(&state, &scope, source).await? {
+        // Native capture may have raced ahead and created a recorder task for this
+        // conversation scope before bridge_started was called. Reuse it so that we
+        // don't produce a second, duplicate task in the task rail.
+        id
     } else {
         bridge_task_id(&agent_id, &scope, &submitted)
     };
