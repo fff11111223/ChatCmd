@@ -188,13 +188,7 @@ impl RuntimeHost {
 
             // D. Check delete
             if settings.block_file_delete {
-                let delete_keywords = [
-                    "rmdir",
-                    "remove-item",
-                    "del",
-                    "erase",
-                    "rm",
-                ];
+                let delete_keywords = ["rmdir", "remove-item", "del", "erase", "rm"];
                 for kw in delete_keywords {
                     // Match the executable token, not a raw substring: a path such as
                     // `C:\model FILES` contains the characters `del ` but is not a delete command.

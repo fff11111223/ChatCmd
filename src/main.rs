@@ -14,6 +14,7 @@ mod chatgpt_transcript;
 mod desktop_tray;
 #[cfg(feature = "embedded-web")]
 mod embedded_web;
+mod external_mcp;
 mod gui_auth;
 mod log_helper;
 mod mutation_journal_bridge;
@@ -257,18 +258,36 @@ async fn run_server(ready: Option<std::sync::mpsc::Sender<()>>) -> Result<()> {
     let plan_prompt_registry = runtime.plan_prompt_registry();
     let telemetry_registry = runtime.telemetry_registry();
     let _finalization_watchdog = runtime.start_finalization_watchdog();
-    let security = HttpSecurity::new(
-        Arc::new(DatabaseAuth(repository.clone())),
-        Arc::new(LocalOrigins {
-            port,
-            allow_missing: ip.is_loopback(),
-        }),
-    );
-    let mcp = chatcmd_mcp::axum_router_with_host_validation(
-        McpServer::new(runtime.clone()),
-        security,
-        !ip.is_loopback(),
-    );
+
+    // Initialize external MCP manager and load persisted server configs
+    let external_mcp = {
+        use crate::external_mcp::{ExternalMcpManager, default_rea_config};
+        use chatcmd_core::{Setting, SettingsStore as _};
+        let manager = std::sync::Arc::new(ExternalMcpManager::new());
+        const MCP_SERVERS_KEY: &str = "external_mcp_servers";
+        let stored = repository.setting(MCP_SERVERS_KEY).await.ok().flatten();
+        let mut configs: Vec<chatcmd_mcp::client::ExternalServerConfig> = stored
+            .and_then(|s| serde_json::from_str(&s.value_json).ok())
+            .unwrap_or_default();
+        // Seed REA default config if no configs exist yet
+        if configs.is_empty() {
+            let default_rea = default_rea_config();
+            let json_str = serde_json::to_string(&[&default_rea]).unwrap_or_default();
+            let setting = Setting {
+                key: MCP_SERVERS_KEY.to_string(),
+                value_json: json_str,
+                updated_at_ms: (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()) as i64,
+            };
+            let _ = repository.set_setting(&setting).await;
+            configs.push(default_rea);
+        }
+        manager.load_and_connect_all(configs).await;
+        manager
+    };
+
     let state = Arc::new(AppState::new(
         repository,
         database_path.display().to_string(),
@@ -282,9 +301,22 @@ async fn run_server(ready: Option<std::sync::mpsc::Sender<()>>) -> Result<()> {
         plan_prompt_registry,
         telemetry_registry,
         blob_store.clone(),
+        external_mcp,
         event_tx,
     ));
     api::start_data_cleanup_scheduler(state.clone());
+    let security = HttpSecurity::new(
+        Arc::new(DatabaseAuth(state.repository.clone())),
+        Arc::new(LocalOrigins {
+            port,
+            allow_missing: ip.is_loopback(),
+        }),
+    );
+    let mcp = chatcmd_mcp::axum_router_with_host_validation(
+        McpServer::new(runtime.clone()),
+        security,
+        !ip.is_loopback(),
+    );
     let management = Router::new()
         .nest("/api", api::router(state.clone()))
         .route(

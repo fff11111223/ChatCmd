@@ -3,6 +3,8 @@
 // RuntimeError is a shared structured API error; keep its established representation.
 #![allow(clippy::result_large_err)]
 
+pub mod client;
+pub use rmcp;
 mod request_identity;
 mod server_contract;
 mod subagent_protocol;

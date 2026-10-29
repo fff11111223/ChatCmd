@@ -313,7 +313,8 @@ impl SkillService {
                 .or_else(|| {
                     settings_path.as_ref().and_then(|p| {
                         if let Ok(content) = fs::read_to_string(p) {
-                            let s: SkillSettings = serde_json::from_str(&content).unwrap_or_default();
+                            let s: SkillSettings =
+                                serde_json::from_str(&content).unwrap_or_default();
                             s.global_skills_dir.map(PathBuf::from)
                         } else {
                             None
@@ -376,7 +377,9 @@ impl SkillService {
         let (skills, mut warnings) = self.resolve_skills_for_workspace(&roots)?;
 
         for skill in &skills {
-            if (skill.source == "user_home" || skill.source == "workspace") && skill.tier_info.has_resident {
+            if (skill.source == "user_home" || skill.source == "workspace")
+                && skill.tier_info.has_resident
+            {
                 warnings.push(format!(
                     "Skill '{}' from legacy source '{}' contains resident.md which is ignored.",
                     skill.name, skill.source
@@ -407,7 +410,8 @@ impl SkillService {
                 title: skill.title.clone(),
                 description: skill.description.clone(),
                 source: skill.directory.to_string_lossy().into_owned(),
-                has_resident: skill.tier_info.has_resident && skill.tier_info.resident_content.is_some(),
+                has_resident: skill.tier_info.has_resident
+                    && skill.tier_info.resident_content.is_some(),
                 has_core: skill.tier_info.has_core,
                 examples: skill.tier_info.examples.clone(),
             })
@@ -489,11 +493,16 @@ impl SkillService {
             ));
         }
 
-        let tier_normalized = tier.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("core");
+        let tier_normalized = tier
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("core");
         if tier_normalized != "core" && tier_normalized != "examples" {
             return Err(RuntimeError::new(
                 "invalid_tier",
-                format!("Invalid skill tier '{tier_normalized}'. Only 'core' and 'examples' are allowed."),
+                format!(
+                    "Invalid skill tier '{tier_normalized}'. Only 'core' and 'examples' are allowed."
+                ),
             ));
         }
 
@@ -530,7 +539,9 @@ impl SkillService {
         let selected = snapshot
             .skills
             .iter()
-            .find(|skill| skill.id == trimmed_skill_id || skill.name.eq_ignore_ascii_case(trimmed_skill_id))
+            .find(|skill| {
+                skill.id == trimmed_skill_id || skill.name.eq_ignore_ascii_case(trimmed_skill_id)
+            })
             .ok_or_else(|| {
                 RuntimeError::new("skill_not_found", "skill is unavailable or shadowed")
             })?;
@@ -931,16 +942,15 @@ impl SkillService {
     }
 
     fn global_by_id(&self, id: &str) -> RuntimeResult<Option<DiscoveredSkill>> {
-        Ok(self
-            .discover_all()?
-            .into_iter()
-            .find(|skill| (skill.source == "global" || skill.source == "user_home") && skill.id == id))
+        Ok(self.discover_all()?.into_iter().find(|skill| {
+            (skill.source == "global" || skill.source == "user_home") && skill.id == id
+        }))
     }
     fn global_by_name(&self, name: &str) -> RuntimeResult<Option<DiscoveredSkill>> {
-        Ok(self
-            .discover_all()?
-            .into_iter()
-            .find(|skill| (skill.source == "global" || skill.source == "user_home") && skill.name.eq_ignore_ascii_case(name)))
+        Ok(self.discover_all()?.into_iter().find(|skill| {
+            (skill.source == "global" || skill.source == "user_home")
+                && skill.name.eq_ignore_ascii_case(name)
+        }))
     }
 
     fn roots_for_workspace(&self, repository_root: Option<&Path>) -> Vec<(String, PathBuf)> {
@@ -958,7 +968,10 @@ impl SkillService {
                     }
                 }
                 if let Some(home_parent) = &self.settings_path.as_ref().and_then(|p| p.parent()) {
-                    let dir = home_parent.join("skills").join("projects").join(&project_name);
+                    let dir = home_parent
+                        .join("skills")
+                        .join("projects")
+                        .join(&project_name);
                     if dir.is_dir() && !roots.iter().any(|(_, p)| p == &dir) {
                         roots.push(("project".into(), dir));
                     }
@@ -1051,7 +1064,8 @@ impl SkillService {
                 title: skill.title,
                 description: skill.description,
                 source: skill.directory.to_string_lossy().into_owned(),
-                has_resident: skill.tier_info.has_resident && skill.tier_info.resident_content.is_some(),
+                has_resident: skill.tier_info.has_resident
+                    && skill.tier_info.resident_content.is_some(),
                 has_core: skill.tier_info.has_core,
                 examples: skill.tier_info.examples,
             })
@@ -1207,11 +1221,7 @@ impl SkillService {
     /// - The path is stored exactly as supplied (normalised to absolute); no files are copied.
     ///
     /// Returns the newly created `LocalSkillSource` on success.
-    pub fn add_local_source(
-        &self,
-        raw_path: &str,
-        scope: &str,
-    ) -> RuntimeResult<LocalSkillSource> {
+    pub fn add_local_source(&self, raw_path: &str, scope: &str) -> RuntimeResult<LocalSkillSource> {
         // Reject obviously dangerous path fragments.
         if raw_path.contains("..") {
             return Err(RuntimeError::new(
@@ -1239,8 +1249,7 @@ impl SkillService {
             .filter_map(Result::ok)
             .any(|entry| {
                 let dir = entry.path();
-                dir.is_dir()
-                    && (dir.join("SKILL.md").is_file() || dir.join("core.md").is_file())
+                dir.is_dir() && (dir.join("SKILL.md").is_file() || dir.join("core.md").is_file())
             });
         if !has_any_skill {
             return Err(RuntimeError::new(
@@ -1284,9 +1293,7 @@ impl SkillService {
     pub fn remove_local_source(&self, source_id: &str) -> RuntimeResult<bool> {
         let mut settings = self.load_settings()?;
         let before = settings.local_sources.len();
-        settings
-            .local_sources
-            .retain(|s| s.id != source_id);
+        settings.local_sources.retain(|s| s.id != source_id);
         if settings.local_sources.len() == before {
             return Ok(false);
         }
@@ -1317,10 +1324,7 @@ impl SkillService {
 
     /// Run lint on every skill directory inside a registered local source.
     /// Returns diagnostics grouped by skill name.
-    pub fn lint_local_source(
-        &self,
-        source_id: &str,
-    ) -> RuntimeResult<Vec<SkillSourceLintResult>> {
+    pub fn lint_local_source(&self, source_id: &str) -> RuntimeResult<Vec<SkillSourceLintResult>> {
         let settings = self.load_settings()?;
         let Some(source) = settings.local_sources.iter().find(|s| s.id == source_id) else {
             return Err(RuntimeError::new(
@@ -1930,35 +1934,69 @@ mod tests {
 
         // 3. Valid read specific example
         let tool_example = service
-            .read_for_task(None, "test-tool-skill", Some("examples"), Some("fs_read"), None)
+            .read_for_task(
+                None,
+                "test-tool-skill",
+                Some("examples"),
+                Some("fs_read"),
+                None,
+            )
             .await
             .expect("read example");
-        assert!(tool_example.instructions.contains("Example content for fs_read"));
+        assert!(
+            tool_example
+                .instructions
+                .contains("Example content for fs_read")
+        );
 
         // 4. Reject ..\ traversal
         let err1 = service
-            .read_for_task(None, "test-tool-skill", Some("examples"), Some(r"..\secret"), None)
+            .read_for_task(
+                None,
+                "test-tool-skill",
+                Some("examples"),
+                Some(r"..\secret"),
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err1.code, "invalid_tool_name");
 
         // 5. Reject ../ traversal
         let err2 = service
-            .read_for_task(None, "test-tool-skill", Some("examples"), Some("../secret"), None)
+            .read_for_task(
+                None,
+                "test-tool-skill",
+                Some("examples"),
+                Some("../secret"),
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err2.code, "invalid_tool_name");
 
         // 6. Reject absolute path (Windows style)
         let err3 = service
-            .read_for_task(None, "test-tool-skill", Some("examples"), Some(r"C:\Windows\win.ini"), None)
+            .read_for_task(
+                None,
+                "test-tool-skill",
+                Some("examples"),
+                Some(r"C:\Windows\win.ini"),
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err3.code, "invalid_tool_name");
 
         // 7. Reject absolute path (Unix style)
         let err4 = service
-            .read_for_task(None, "test-tool-skill", Some("examples"), Some("/etc/passwd"), None)
+            .read_for_task(
+                None,
+                "test-tool-skill",
+                Some("examples"),
+                Some("/etc/passwd"),
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err4.code, "invalid_tool_name");
@@ -1972,7 +2010,13 @@ mod tests {
 
         // 9. Reject uppercase letters
         let err6 = service
-            .read_for_task(None, "test-tool-skill", Some("examples"), Some("FS_READ"), None)
+            .read_for_task(
+                None,
+                "test-tool-skill",
+                Some("examples"),
+                Some("FS_READ"),
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err6.code, "invalid_tool_name");
@@ -2006,11 +2050,8 @@ mod tests {
         let skill_dir = global_skills.join("in-place-skill");
         fs::create_dir_all(skill_dir.join("examples")).expect("create dirs");
 
-        fs::write(
-            skill_dir.join("resident.md"),
-            "Resident in place guidance",
-        )
-        .expect("write resident");
+        fs::write(skill_dir.join("resident.md"), "Resident in place guidance")
+            .expect("write resident");
 
         fs::write(
             skill_dir.join("core.md"),
@@ -2018,11 +2059,8 @@ mod tests {
         )
         .expect("write core");
 
-        fs::write(
-            skill_dir.join("examples/run_test.md"),
-            "Example run test",
-        )
-        .expect("write example");
+        fs::write(skill_dir.join("examples/run_test.md"), "Example run test")
+            .expect("write example");
 
         // Discovered from global_skills in-place
         let service = SkillService::new(None, None, Some(&global_skills), 10_000);
@@ -2088,17 +2126,23 @@ mod tests {
         let service = SkillService::new(Some(&home), None, Some(&empty_global), 10_000);
 
         // 1. Rejects path with ".."
-        let err_dotdot = service.add_local_source("C:/foo/../bar", "global").unwrap_err();
+        let err_dotdot = service
+            .add_local_source("C:/foo/../bar", "global")
+            .unwrap_err();
         assert_eq!(err_dotdot.code, "invalid_local_source");
 
         // 2. Rejects non-existent directory
-        let err_not_exist = service.add_local_source("C:/non/existent/path/never", "global").unwrap_err();
+        let err_not_exist = service
+            .add_local_source("C:/non/existent/path/never", "global")
+            .unwrap_err();
         assert_eq!(err_not_exist.code, "invalid_local_source");
 
         // 3. Rejects directory with no skills
         let empty_folder = temp.path().join("empty_folder");
         fs::create_dir_all(&empty_folder).expect("create empty folder");
-        let err_no_skills = service.add_local_source(empty_folder.to_str().unwrap(), "global").unwrap_err();
+        let err_no_skills = service
+            .add_local_source(empty_folder.to_str().unwrap(), "global")
+            .unwrap_err();
         assert_eq!(err_no_skills.code, "invalid_local_source");
 
         // 4. Accepts valid folder with at least one skill
@@ -2111,12 +2155,16 @@ mod tests {
         )
         .expect("write core");
 
-        let source = service.add_local_source(valid_source.to_str().unwrap(), "global").expect("add source");
+        let source = service
+            .add_local_source(valid_source.to_str().unwrap(), "global")
+            .expect("add source");
         assert_eq!(source.scope, "global");
         assert!(!source.id.is_empty());
 
         // 5. Rejects duplicate registration
-        let err_dup = service.add_local_source(valid_source.to_str().unwrap(), "global").unwrap_err();
+        let err_dup = service
+            .add_local_source(valid_source.to_str().unwrap(), "global")
+            .unwrap_err();
         assert_eq!(err_dup.code, "local_source_conflict");
 
         // 6. Listed in list_local_sources
@@ -2142,20 +2190,31 @@ mod tests {
         )
         .expect("write core");
 
-        let added = service.add_local_source(source_folder.to_str().unwrap(), "global").expect("add source");
+        let added = service
+            .add_local_source(source_folder.to_str().unwrap(), "global")
+            .expect("add source");
         assert_eq!(service.list_local_sources().unwrap().len(), 1);
 
         // Remove source
-        let removed = service.remove_local_source(&added.id).expect("remove source");
+        let removed = service
+            .remove_local_source(&added.id)
+            .expect("remove source");
         assert!(removed);
         assert_eq!(service.list_local_sources().unwrap().len(), 0);
 
         // Crucial test: Files on disk must STILL exist!
-        assert!(core_file.is_file(), "core.md must NOT be deleted upon source removal");
+        assert!(
+            core_file.is_file(),
+            "core.md must NOT be deleted upon source removal"
+        );
         assert!(skill.is_dir(), "skill directory must NOT be deleted");
 
         // Removing again returns false
-        assert!(!service.remove_local_source(&added.id).expect("remove again"));
+        assert!(
+            !service
+                .remove_local_source(&added.id)
+                .expect("remove again")
+        );
     }
 
     #[test]
@@ -2179,15 +2238,25 @@ mod tests {
         )
         .expect("write SKILL.md");
 
-        let added = service.add_local_source(source_folder.to_str().unwrap(), "global").expect("add");
+        let added = service
+            .add_local_source(source_folder.to_str().unwrap(), "global")
+            .expect("add");
 
         let lint_results = service.lint_local_source(&added.id).expect("lint source");
         assert_eq!(lint_results.len(), 1);
         let diags = &lint_results[0].diagnostics;
 
         // Must report resident_too_long Error and legacy_skill_format Warning
-        assert!(diags.iter().any(|d| d.code == "resident_too_long" && d.severity == LintSeverity::Error));
-        assert!(diags.iter().any(|d| d.code == "legacy_skill_format" && d.severity == LintSeverity::Warning));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "resident_too_long" && d.severity == LintSeverity::Error)
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "legacy_skill_format" && d.severity == LintSeverity::Warning)
+        );
     }
 
     #[tokio::test]
@@ -2212,8 +2281,15 @@ mod tests {
         assert_eq!(usage.limit_chars, 800);
 
         // 2. resident_preview_for_project
-        let preview = service.resident_preview_for_project(None).await.expect("preview");
-        assert!(preview.resident_instructions.contains("Strict rule: do not lie."));
+        let preview = service
+            .resident_preview_for_project(None)
+            .await
+            .expect("preview");
+        assert!(
+            preview
+                .resident_instructions
+                .contains("Strict rule: do not lie.")
+        );
         assert_eq!(preview.skill_names, vec!["preview-skill"]);
     }
 
@@ -2245,7 +2321,11 @@ mod tests {
         assert_eq!(diags.skill_count, 1);
         assert_eq!(diags.skipped_subdirectories.len(), 2);
 
-        let skipped_names: Vec<_> = diags.skipped_subdirectories.iter().map(|s| s.name.as_str()).collect();
+        let skipped_names: Vec<_> = diags
+            .skipped_subdirectories
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
         assert!(skipped_names.contains(&".system_store"));
         assert!(skipped_names.contains(&"empty-skill"));
     }
@@ -2257,13 +2337,42 @@ mod tests {
         let skill = global.join("reloadable");
         fs::create_dir_all(&skill).expect("create skill");
         let core = skill.join("core.md");
-        fs::write(&core, "---\nname: reloadable\ndescription: Reload test\n---\nold").expect("write old");
+        fs::write(
+            &core,
+            "---\nname: reloadable\ndescription: Reload test\n---\nold",
+        )
+        .expect("write old");
         let service = SkillService::new(None, None, Some(&global), 10_000);
-        assert!(service.read_for_task(Some("task"), "reloadable", None, None, None).await.expect("read old").instructions.contains("old"));
-        fs::write(&core, "---\nname: reloadable\ndescription: Reload test\n---\nnew").expect("write new");
-        assert!(service.read_for_task(Some("task"), "reloadable", None, None, None).await.expect("cached read").instructions.contains("old"));
+        assert!(
+            service
+                .read_for_task(Some("task"), "reloadable", None, None, None)
+                .await
+                .expect("read old")
+                .instructions
+                .contains("old")
+        );
+        fs::write(
+            &core,
+            "---\nname: reloadable\ndescription: Reload test\n---\nnew",
+        )
+        .expect("write new");
+        assert!(
+            service
+                .read_for_task(Some("task"), "reloadable", None, None, None)
+                .await
+                .expect("cached read")
+                .instructions
+                .contains("old")
+        );
         assert_eq!(service.reload_all().await.expect("reload"), 1);
-        assert!(service.read_for_task(Some("task"), "reloadable", None, None, None).await.expect("read new").instructions.contains("new"));
+        assert!(
+            service
+                .read_for_task(Some("task"), "reloadable", None, None, None)
+                .await
+                .expect("read new")
+                .instructions
+                .contains("new")
+        );
     }
 
     #[test]
@@ -2283,12 +2392,21 @@ mod tests {
 
         // 1. Target release exe
         let exe_release = Path::new(r"D:\frank\gemini\ChatCmd\target\release\chatcmd.exe");
-        let exe_release_verbatim = Path::new(r"\\?\D:\frank\gemini\ChatCmd\target\release\chatcmd.exe");
+        let exe_release_verbatim =
+            Path::new(r"\\?\D:\frank\gemini\ChatCmd\target\release\chatcmd.exe");
         for &wd in &workdirs {
             let res = resolve_default_global_skills_dir_from(Some(exe_release), wd);
-            assert_eq!(res, expected_repo_skills, "Failed for release exe with workdir {:?}", wd);
+            assert_eq!(
+                res, expected_repo_skills,
+                "Failed for release exe with workdir {:?}",
+                wd
+            );
             let res_v = resolve_default_global_skills_dir_from(Some(exe_release_verbatim), wd);
-            assert_eq!(res_v, expected_repo_skills, "Failed for verbatim release exe with workdir {:?}", wd);
+            assert_eq!(
+                res_v, expected_repo_skills,
+                "Failed for verbatim release exe with workdir {:?}",
+                wd
+            );
             assert!(!res.to_string_lossy().starts_with(r"\\?\"));
             assert!(!res_v.to_string_lossy().starts_with(r"\\?\"));
         }
@@ -2298,9 +2416,17 @@ mod tests {
         let exe_debug_verbatim = Path::new(r"\\?\D:\frank\gemini\ChatCmd\target\debug\chatcmd.exe");
         for &wd in &workdirs {
             let res = resolve_default_global_skills_dir_from(Some(exe_debug), wd);
-            assert_eq!(res, expected_repo_skills, "Failed for debug exe with workdir {:?}", wd);
+            assert_eq!(
+                res, expected_repo_skills,
+                "Failed for debug exe with workdir {:?}",
+                wd
+            );
             let res_v = resolve_default_global_skills_dir_from(Some(exe_debug_verbatim), wd);
-            assert_eq!(res_v, expected_repo_skills, "Failed for verbatim debug exe with workdir {:?}", wd);
+            assert_eq!(
+                res_v, expected_repo_skills,
+                "Failed for verbatim debug exe with workdir {:?}",
+                wd
+            );
             assert!(!res.to_string_lossy().starts_with(r"\\?\"));
             assert!(!res_v.to_string_lossy().starts_with(r"\\?\"));
         }
@@ -2310,7 +2436,11 @@ mod tests {
         let expected_installed_skills = PathBuf::from(r"C:\Program Files\ChatCmd\skills\global");
         for &wd in &workdirs {
             let res = resolve_default_global_skills_dir_from(Some(exe_installed), wd);
-            assert_eq!(res, expected_installed_skills, "Failed for installed exe with workdir {:?}", wd);
+            assert_eq!(
+                res, expected_installed_skills,
+                "Failed for installed exe with workdir {:?}",
+                wd
+            );
             assert!(!res.to_string_lossy().starts_with(r"\\?\"));
         }
     }

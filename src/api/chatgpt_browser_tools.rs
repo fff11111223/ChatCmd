@@ -1,19 +1,15 @@
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use chatcmd_mcp::RuntimeApi;
 use chatcmd_runtime::OperationContext;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::Row;
 
 use crate::websocket::AppState;
 
-use super::{db_problem, Problem};
+use super::{Problem, db_problem};
 
 /// Blocked lifecycle tool names that must not be called through the browser
 /// tool bridge (they are managed by the bridge lifecycle handlers).
@@ -231,7 +227,12 @@ pub(super) async fn browser_tool_call(
     .await
     .map_err(db_problem)?;
 
-    let note_to_save = match input.note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+    let note_to_save = match input
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
         Some(n) => Some(n.to_owned()),
         None => {
             let think_payload: Option<String> = sqlx::query_scalar(
@@ -242,7 +243,9 @@ pub(super) async fn browser_tool_call(
             .await
             .ok()
             .flatten();
-            think_payload.and_then(|p| crate::api::task_views::extract_note_for_call_from_think_json(call_id, &p))
+            think_payload.and_then(|p| {
+                crate::api::task_views::extract_note_for_call_from_think_json(call_id, &p)
+            })
         }
     };
 
@@ -294,11 +297,7 @@ pub(super) async fn browser_tool_call(
     //
     // call_id is used as request_id so RuntimeHost idempotency keys are
     // stable per tool call across retries.
-    let mut context = OperationContext::new(
-        call_id.to_owned(),
-        agent_id,
-        tool.to_owned(),
-    );
+    let mut context = OperationContext::new(call_id.to_owned(), agent_id, tool.to_owned());
     context.task_id = Some(task_id.clone());
     context.turn_id = Some(turn_id.clone());
     context.conversation_scope_id = conversation_id
@@ -307,11 +306,62 @@ pub(super) async fn browser_tool_call(
         .map(|id| format!("openai:{id}"));
     // mcp_session_id intentionally left as None for browser bridge calls.
 
-    // 8. Execute via RuntimeHost::call() -- the ONE AND ONLY entry point.
+    // 8. Execute via RuntimeHost::call() -- the ONE AND ONLY entry point for local tools.
+    //    For external MCP tools (mcp__{server_id}__{tool_name}), route through ExternalMcpManager.
     //    authorize_tool / ensure_call_identity / authorize_execution /
     //    approval / activity registration / timeline persistence / dispatch
-    //    are all invoked through this single path.
-    let result = state.runtime.call(tool, context, input.arguments).await;
+    //    are all invoked through this single path for local tools.
+    let result = if tool.starts_with("mcp__") {
+        // External MCP tool dispatch — routes to the appropriate server connection.
+        // We still record the call in the timeline via the result path below.
+        let raw_result = state
+            .external_mcp
+            .call_tool(tool, input.arguments.clone())
+            .await;
+
+        // Apply the same byte budget as local commands. MCP text results may be large.
+        let value = match raw_result {
+            Ok(mut val) => {
+                // Guard string results
+                if let Value::String(ref s) = val {
+                    if s.len() > MAX_AI_COMMAND_RESULT_BYTES {
+                        val = Value::String(format!(
+                            "[MCP result truncated: {} bytes, limit {} bytes]\n{}",
+                            s.len(),
+                            MAX_AI_COMMAND_RESULT_BYTES,
+                            &s[..MAX_AI_COMMAND_RESULT_BYTES],
+                        ));
+                    }
+                }
+                Ok(val)
+            }
+            Err(e) => Err(chatcmd_runtime::RuntimeError::new("mcp_error", e)),
+        };
+
+        // Persist tool_result event in timeline so idempotency and history work correctly.
+        if let Ok(ref result_value) = value {
+            let payload = serde_json::to_string(&serde_json::json!({
+                "activityId": call_id,
+                "tool": tool,
+                "content": result_value,
+            }))
+            .unwrap_or_default();
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO timeline_events \
+                 (task_id, turn_id, actor, kind, payload_json, created_at_ms) \
+                 VALUES (?, ?, 'assistant', 'tool_result', ?, ?)",
+            )
+            .bind(&task_id)
+            .bind(&turn_id)
+            .bind(&payload)
+            .bind(super::now_ms())
+            .execute(state.repository.pool())
+            .await;
+        }
+        value
+    } else {
+        state.runtime.call(tool, context, input.arguments).await
+    };
 
     if let Some(ref note) = note_to_save {
         let _ = sqlx::query(
@@ -357,13 +407,16 @@ pub(super) async fn browser_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use serde_json::json;
+    use std::fs;
 
     #[tokio::test]
     async fn browser_tool_call_rejects_subagent_start() {
-        let (host, _agent_id, directory) = crate::runtime_host::user_message_tests::test_host().await;
-        let state = Arc::new(host.test_app_state(directory.path().join("chatcmd.db").display().to_string()));
+        let (host, _agent_id, directory) =
+            crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(
+            host.test_app_state(directory.path().join("chatcmd.db").display().to_string()),
+        );
         let payload = BrowserToolCall {
             request_id: "request-subagent-blocked".to_string(),
             call_id: "call-subagent-blocked".to_string(),
@@ -381,8 +434,11 @@ mod tests {
 
     #[tokio::test]
     async fn browser_tool_call_includes_resident_footer_when_skill_has_resident() {
-        let (host, agent_id, directory) = crate::runtime_host::user_message_tests::test_host().await;
-        let state = Arc::new(host.test_app_state(directory.path().join("chatcmd.db").display().to_string()));
+        let (host, agent_id, directory) =
+            crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(
+            host.test_app_state(directory.path().join("chatcmd.db").display().to_string()),
+        );
         let now = super::super::now_ms();
 
         // Create global skill with resident.md
@@ -445,7 +501,11 @@ Core instructions
         let res_val = &response.0;
         let footer = res_val.get("residentFooter").and_then(Value::as_str);
         assert!(footer.is_some(), "residentFooter should be present");
-        assert!(footer.unwrap().contains("Strict safety rule: resident instructions active."));
+        assert!(
+            footer
+                .unwrap()
+                .contains("Strict safety rule: resident instructions active.")
+        );
 
         // Error call: residentFooter still present
         let payload_err = BrowserToolCall {
@@ -455,20 +515,33 @@ Core instructions
             note: None,
             arguments: json!({ "path": "non-existent-file-path-xyz" }),
         };
-        let err_response = browser_tool_call(axum::extract::State(state.clone()), Json(payload_err))
-            .await
-            .expect("err call");
+        let err_response =
+            browser_tool_call(axum::extract::State(state.clone()), Json(payload_err))
+                .await
+                .expect("err call");
         let err_val = &err_response.0;
         assert_eq!(err_val.get("ok").and_then(Value::as_bool), Some(false));
         let err_footer = err_val.get("residentFooter").and_then(Value::as_str);
-        assert!(err_footer.is_some(), "residentFooter should be present on error response");
+        assert!(
+            err_footer.is_some(),
+            "residentFooter should be present on error response"
+        );
         assert!(err_footer.unwrap().contains("Strict safety rule"));
     }
 
     #[tokio::test]
     async fn browser_tool_call_resident_footer_absent_when_no_resident_skill() {
-        let (host, agent_id, directory) = crate::runtime_host::user_message_tests::test_host().await;
-        let state = Arc::new(host.test_app_state(directory.path().join("chatcmd.db").display().to_string()));
+        let (host, agent_id, directory) =
+            crate::runtime_host::user_message_tests::test_host().await;
+        let mut state =
+            host.test_app_state(directory.path().join("chatcmd.db").display().to_string());
+        state.skills = chatcmd_runtime::SkillService::new(
+            None,
+            None,
+            Some(&directory.path().join("empty-skills")),
+            10_000,
+        );
+        let state = Arc::new(state);
         let now = super::super::now_ms();
 
         let task_id = "task-no-resident";

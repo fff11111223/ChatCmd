@@ -61,9 +61,15 @@ pub(super) async fn create_request(
     validate_message(&input.content)?;
     let provider = input.provider.as_deref().unwrap_or("chatgpt");
     if provider != "chatgpt" && provider != "gemini" {
-        return Err(Problem::new(StatusCode::BAD_REQUEST, "Bad Request", "Unsupported browser provider."));
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            "Unsupported browser provider.",
+        ));
     }
-    let (agent_id, agent_name) = if provider == "gemini" && (input.agent_id.trim().is_empty() || input.agent_id.trim() == "gemini-web-agent") {
+    let (agent_id, agent_name) = if provider == "gemini"
+        && (input.agent_id.trim().is_empty() || input.agent_id.trim() == "gemini-web-agent")
+    {
         let now = now_ms();
         sqlx::query("INSERT INTO mcp_agents(id,name,secret_hash,secret_last4,enabled,created_at_ms,updated_at_ms) VALUES('gemini-web-agent','Gemini Web',randomblob(32),'none',0,?,?) ON CONFLICT(id) DO NOTHING")
             .bind(now).bind(now)
@@ -333,7 +339,14 @@ pub(super) async fn persist_bridge_started_binding(
             .map_err(db_problem)?;
     }
     guard_conversation_binding(&mut transaction, &task_id, Some(binding.conversation_id)).await?;
-    let source = if binding.conversation_url.starts_with("https://gemini.google.com/") { "gemini_web" } else { "chatgpt_web" };
+    let source = if binding
+        .conversation_url
+        .starts_with("https://gemini.google.com/")
+    {
+        "gemini_web"
+    } else {
+        "chatgpt_web"
+    };
     sqlx::query("INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,allow_execute,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,1,'running',NULL,1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET conversation_scope_hash=excluded.conversation_scope_hash,title=COALESCE(tasks.title,excluded.title),source=excluded.source,project_folder=CASE WHEN EXISTS(SELECT 1 FROM chatgpt_compact_jobs j WHERE j.task_id=tasks.id AND j.phase='completed') THEN tasks.project_folder ELSE COALESCE(excluded.project_folder,tasks.project_folder) END,allow_execute=CASE WHEN EXISTS(SELECT 1 FROM chatgpt_compact_jobs j WHERE j.task_id=tasks.id AND j.phase='completed') THEN tasks.allow_execute ELSE 1 END,status='running',stopped_at_ms=NULL,updated_at_ms=excluded.updated_at_ms")
         .bind(&task_id)
         .bind(binding.agent_id)

@@ -253,10 +253,7 @@ pub(super) async fn reload_all_skills(
 pub(super) async fn list_local_sources(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, Problem> {
-    let sources = state
-        .skills
-        .list_local_sources()
-        .map_err(runtime_problem)?;
+    let sources = state.skills.list_local_sources().map_err(runtime_problem)?;
     Ok(Json(
         serde_json::to_value(&sources).unwrap_or(Value::Array(vec![])),
     ))
@@ -330,17 +327,14 @@ pub(super) async fn lint_local_source(
     State(state): State<Arc<AppState>>,
     Path(source_id): Path<String>,
 ) -> Result<Json<Value>, Problem> {
-    let results = state
-        .skills
-        .lint_local_source(&source_id)
-        .map_err(|e| {
-            let status = if e.code == "local_source_not_found" {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            Problem::new(status, "Lint error", e.message)
-        })?;
+    let results = state.skills.lint_local_source(&source_id).map_err(|e| {
+        let status = if e.code == "local_source_not_found" {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        Problem::new(status, "Lint error", e.message)
+    })?;
     let items: Vec<Value> = results
         .iter()
         .map(|r| {
@@ -380,9 +374,7 @@ pub(super) async fn resident_usage(
         .resident_usage(None, None)
         .await
         .map_err(runtime_problem)?;
-    Ok(Json(
-        serde_json::to_value(&usage).unwrap_or(Value::Null),
-    ))
+    Ok(Json(serde_json::to_value(&usage).unwrap_or(Value::Null)))
 }
 
 /// GET /skills/resident-preview — preview resident text the model would receive.
@@ -401,21 +393,13 @@ pub(super) async fn resident_preview(
         .resident_preview_for_project(project_folder.as_deref())
         .await
         .map_err(runtime_problem)?;
-    Ok(Json(
-        serde_json::to_value(&preview).unwrap_or(Value::Null),
-    ))
+    Ok(Json(serde_json::to_value(&preview).unwrap_or(Value::Null)))
 }
 
 /// GET /skills/diagnostics — read-only diagnostics of the global skills directory.
 pub(super) async fn skill_diagnostics(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, Problem> {
-    let diags = state
-        .skills
-        .global_diagnostics()
-        .map_err(runtime_problem)?;
-    Ok(Json(
-        serde_json::to_value(&diags).unwrap_or(Value::Null),
-    ))
+    let diags = state.skills.global_diagnostics().map_err(runtime_problem)?;
+    Ok(Json(serde_json::to_value(&diags).unwrap_or(Value::Null)))
 }
-

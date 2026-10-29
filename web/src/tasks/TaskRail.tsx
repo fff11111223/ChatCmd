@@ -1,4 +1,4 @@
-import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, RotateCw, Search, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, RotateCw, Search, Server, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEventHandler } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
@@ -20,6 +20,7 @@ const menuItems = [
   { to: '/', end: true, label: 'Overview', icon: LayoutDashboard },
   { to: '/sessions', label: 'Session', icon: TerminalSquare },
   { to: '/agents', label: 'Agents', icon: Bot },
+  { to: '/mcp-servers', label: 'MCP', icon: Server },
   { to: '/skills', label: 'Skills', icon: Wrench },
   { to: '/settings', label: 'Setting', icon: Settings },
 ];

@@ -92,7 +92,10 @@ pub(super) async fn enroll(
         .bind(&input.conversation_id).bind(&scope).bind(&input.conversation_id)
         .fetch_all(&mut *tx).await.map_err(db_problem)?;
     let now = now_ms();
-    let source = if input.conversation_url.starts_with("https://gemini.google.com/") {
+    let source = if input
+        .conversation_url
+        .starts_with("https://gemini.google.com/")
+    {
         "gemini_web"
     } else {
         "chatgpt_web"

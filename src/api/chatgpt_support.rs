@@ -176,7 +176,16 @@ pub(super) async fn append_user_message(
     content: &str,
     submitted: &str,
 ) -> Result<(), Problem> {
-    append_user_message_with_provider(state, task_id, turn_id, request_id, content, submitted, "chatgpt_web").await
+    append_user_message_with_provider(
+        state,
+        task_id,
+        turn_id,
+        request_id,
+        content,
+        submitted,
+        "chatgpt_web",
+    )
+    .await
 }
 
 pub(super) async fn append_user_message_with_provider(
@@ -189,7 +198,8 @@ pub(super) async fn append_user_message_with_provider(
     provider: &str,
 ) -> Result<(), Problem> {
     let event_id = format!("chatgpt-user-{request_id}");
-    let payload = json!({"role":"user","content":content,"submittedContent":submitted,"provider":provider});
+    let payload =
+        json!({"role":"user","content":content,"submittedContent":submitted,"provider":provider});
     let changed = sqlx::query("INSERT OR IGNORE INTO timeline_events(event_id,task_id,turn_id,session_id,actor,kind,idempotency_key,payload_json,metadata_json,created_at_ms) VALUES(?,?,?,NULL,'user','message',?,?,NULL,?)")
         .bind(&event_id)
         .bind(task_id)
@@ -215,7 +225,16 @@ pub(super) async fn append_status(
     status: &str,
     content: &str,
 ) -> Result<(), Problem> {
-    append_status_with_provider(state, task_id, turn_id, request_id, status, content, "chatgpt_web").await
+    append_status_with_provider(
+        state,
+        task_id,
+        turn_id,
+        request_id,
+        status,
+        content,
+        "chatgpt_web",
+    )
+    .await
 }
 
 pub(super) async fn append_status_with_provider(
@@ -282,9 +301,7 @@ pub(super) async fn guard_conversation_binding(
     let Some(existing) = existing else {
         return Ok(());
     };
-    if existing == incoming
-        || is_provisional_conversation_id(&existing)
-    {
+    if existing == incoming || is_provisional_conversation_id(&existing) {
         return Ok(());
     }
     Err(Problem::new(
@@ -306,7 +323,13 @@ pub(super) fn validate_message(content: &str) -> Result<(), Problem> {
     Ok(())
 }
 
-pub(super) fn browser_provider(url: &str) -> &'static str { if url.starts_with("https://gemini.google.com/") { "gemini_web" } else { "chatgpt_web" } }
+pub(super) fn browser_provider(url: &str) -> &'static str {
+    if url.starts_with("https://gemini.google.com/") {
+        "gemini_web"
+    } else {
+        "chatgpt_web"
+    }
+}
 
 pub(super) fn validate_conversation(id: &str, url: &str) -> Result<(), Problem> {
     let id = id.trim();
@@ -314,7 +337,8 @@ pub(super) fn validate_conversation(id: &str, url: &str) -> Result<(), Problem> 
     if id.is_empty()
         || id.len() > 500
         || url.len() > 2_000
-        || !(url.starts_with("https://chatgpt.com/") || url.starts_with("https://gemini.google.com/"))
+        || !(url.starts_with("https://chatgpt.com/")
+            || url.starts_with("https://gemini.google.com/"))
     {
         return Err(Problem::new(
             StatusCode::BAD_REQUEST,

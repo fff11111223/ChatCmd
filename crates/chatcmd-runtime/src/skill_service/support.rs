@@ -108,8 +108,7 @@ pub(super) fn to_managed(skill: DiscoveredSkill) -> ManagedSkill {
         can_delete: skill.can_delete,
         options: skill.options,
         source_type,
-        has_resident: skill.tier_info.has_resident
-            && skill.tier_info.resident_content.is_some(),
+        has_resident: skill.tier_info.has_resident && skill.tier_info.resident_content.is_some(),
         resident_chars,
         has_core: skill.tier_info.has_core,
         examples: skill.tier_info.examples,

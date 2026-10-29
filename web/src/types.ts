@@ -83,3 +83,43 @@ export interface SkillInstallResult { skills: UserSkill[] }
 export interface Skill { id: Id; name: string; source?: string; enabled: boolean; description?: string; content?: string }
 export interface LocalSettings { bindAddress: string; port: number; mcpEndpoint: string; databasePath: string; databaseState?: HealthState; executionMode: CommandExecutionMode; approveNewConversations: boolean; terminalExecutable: string; taskConcurrency: number; sessionConcurrency: number; subagentConcurrency: number; theme: 'system' | 'light' | 'dark'; fontFamily: string; taskFontScale: number; language: 'en' | 'vi'; sound?: boolean; newAgentSound: boolean; finishedTaskSound: boolean; dataRetention: '1h' | '5h' | '10h' | '1d' | '3d' | '5d' | '10d' | 'off'; blockFileDelete?: boolean; blockProcessKill?: boolean; blockSystemShutdown?: boolean; blockDiskFormat?: boolean; customBlockedKeywords?: string; enforceProjectFolderOnly?: boolean }
 export interface ProblemDetails { type?: string; title?: string; status?: number; detail?: string; message?: string; code?: string; instance?: string; errors?: Record<string, string[]> }
+
+// ── External MCP ────────────────────────────────────────────────────────────
+export type ExternalMcpServerStatus =
+  | { status: 'disconnected' }
+  | { status: 'connecting' }
+  | { status: 'connected'; protocolVersion: string; serverName?: string; serverVersion?: string; connectedAtMs: number }
+  | { status: 'error'; message: string; occurredAtMs: number };
+
+export interface ExternalMcpServer {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  transportType: string;
+  status: ExternalMcpServerStatus;
+  toolsCount: number;
+  updatedAtMs: number;
+}
+
+export type ExternalMcpTransportConfig =
+  | { type: 'stdio'; command: string; args: string[]; env: Record<string, string>; cwd?: string | null }
+  | { type: 'streamable_http'; url: string; headers: Record<string, string> };
+
+export interface ExternalMcpServerConfig {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  transport: ExternalMcpTransportConfig;
+  timeoutSecs: number;
+  autoConnect: boolean;
+}
+
+export interface ExternalMcpToolSummary {
+  serverId: string;
+  originalName: string;
+  qualifiedName: string;
+  displayName: string;
+  description: string;
+}

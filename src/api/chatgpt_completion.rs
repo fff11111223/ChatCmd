@@ -166,7 +166,9 @@ pub(super) async fn persist_browser_completion(
     let turn_id = row.get::<String, _>("turn_id");
     let user_content = row.get::<String, _>("user_content");
     let submitted = row.get::<String, _>("submitted_content");
-    let provider = super::chatgpt_support::browser_provider(completion.conversation_url.as_deref().unwrap_or(""));
+    let provider = super::chatgpt_support::browser_provider(
+        completion.conversation_url.as_deref().unwrap_or(""),
+    );
     let created_at_ms = row.get::<i64, _>("created_at_ms");
 
     let mcp_turn_id = crate::chatgpt_transcript::mcp_turn(
@@ -256,7 +258,8 @@ pub(super) async fn persist_browser_completion(
     })
 }
 
-async fn insert_browser_user_event(provider: &str,
+async fn insert_browser_user_event(
+    provider: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
     turn_id: &str,
@@ -266,14 +269,16 @@ async fn insert_browser_user_event(provider: &str,
     now: i64,
 ) -> Result<Option<(String, Value)>, Problem> {
     let event_id = format!("chatgpt-user-{request_id}");
-    let payload = json!({"role":"user","content":content,"submittedContent":submitted,"provider":provider});
+    let payload =
+        json!({"role":"user","content":content,"submittedContent":submitted,"provider":provider});
     let changed = sqlx::query("INSERT OR IGNORE INTO timeline_events(event_id,task_id,turn_id,session_id,actor,kind,idempotency_key,payload_json,metadata_json,created_at_ms) VALUES(?,?,?,NULL,'user','message',?,?,NULL,?)")
         .bind(&event_id).bind(task_id).bind(turn_id).bind(&event_id).bind(payload.to_string()).bind(now)
         .execute(&mut **transaction).await.map_err(db_problem)?.rows_affected() == 1;
     Ok(changed.then_some((event_id, payload)))
 }
 
-async fn insert_browser_status_event(provider: &str,
+async fn insert_browser_status_event(
+    provider: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
     turn_id: &str,

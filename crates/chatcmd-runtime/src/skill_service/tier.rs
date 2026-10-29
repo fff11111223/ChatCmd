@@ -140,7 +140,10 @@ pub fn inspect_skill_tier(
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default();
+                    let name = path
+                        .file_name()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or_default();
                     if let Some(stem) = name.strip_suffix(".md") {
                         if !stem.is_empty() {
                             found_examples.push(stem.to_owned());
@@ -250,7 +253,10 @@ mod tests {
         assert!(info.has_core);
         assert_eq!(info.overrides.as_deref(), Some("global-skill"));
         assert_eq!(info.examples, vec!["command_run"]);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
     }
 
     #[test]
@@ -266,7 +272,11 @@ mod tests {
         let (info, diagnostics) = inspect_skill_tier(&skill_dir, SkillSourceType::Global);
 
         assert!(info.has_resident);
-        assert!(diagnostics.iter().any(|d| d.severity == LintSeverity::Error && d.code == "resident_too_long"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.severity == LintSeverity::Error && d.code == "resident_too_long")
+        );
     }
 
     #[test]
@@ -278,12 +288,17 @@ mod tests {
         fs::write(skill_dir.join("resident.md"), "Resident content").expect("write resident");
         fs::write(skill_dir.join("SKILL.md"), "Legacy skill").expect("write SKILL.md");
 
-        let (info, diagnostics) = inspect_skill_tier(&skill_dir, SkillSourceType::LegacyAgentOrCodex);
+        let (info, diagnostics) =
+            inspect_skill_tier(&skill_dir, SkillSourceType::LegacyAgentOrCodex);
 
         assert!(info.has_resident);
         assert_eq!(info.resident_content, None); // Ignored!
         assert!(diagnostics.iter().any(|d| d.severity == LintSeverity::Warning && d.code == "legacy_resident_ignored"));
-        assert!(diagnostics.iter().any(|d| d.severity == LintSeverity::Warning && d.code == "legacy_skill_format"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.severity == LintSeverity::Warning && d.code == "legacy_skill_format")
+        );
     }
 
     #[test]
@@ -293,12 +308,8 @@ mod tests {
         let r3 = "c".repeat(250);
         let r4 = "d".repeat(250);
 
-        let (merged, warnings) = merge_resident_instructions(&[
-            ("s1", &r1),
-            ("s2", &r2),
-            ("s3", &r3),
-            ("s4", &r4),
-        ]);
+        let (merged, warnings) =
+            merge_resident_instructions(&[("s1", &r1), ("s2", &r2), ("s3", &r3), ("s4", &r4)]);
 
         assert_eq!(merged.chars().count(), MAX_RESIDENT_CHARS_TOTAL);
         assert_eq!(warnings.len(), 1);

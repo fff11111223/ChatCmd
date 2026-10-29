@@ -383,7 +383,11 @@ pub(super) async fn set_task_project_folder(
     Path(id): Path<String>,
     Json(input): Json<TaskProjectFolderInput>,
 ) -> Result<Json<Value>, Problem> {
-    let project_folder = input.project_folder.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let project_folder = input
+        .project_folder
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let affected = sqlx::query("UPDATE tasks SET project_folder=? WHERE id=?")
         .bind(project_folder)
         .bind(&id)
@@ -711,7 +715,10 @@ fn compact_tool_payload(kind: &str, payload: Value) -> Value {
     Value::Object(object)
 }
 
-pub(crate) fn extract_note_for_call_from_think_json(call_id: &str, payload_json: &str) -> Option<String> {
+pub(crate) fn extract_note_for_call_from_think_json(
+    call_id: &str,
+    payload_json: &str,
+) -> Option<String> {
     if !payload_json.contains(call_id) {
         return None;
     }
@@ -814,7 +821,7 @@ fn extract_note_by_regex(text: &str) -> Option<String> {
         if escape {
             match ch {
                 'n' => result.push('\n'),
-                'r' => {},
+                'r' => {}
                 't' => result.push('\t'),
                 '\\' => result.push('\\'),
                 '"' => result.push('"'),
@@ -859,7 +866,10 @@ mod tests {
 ```
 "#;
         let note = extract_note_for_call_from_text("call_488", content);
-        assert_eq!(note.as_deref(), Some("核對完整封鎖清單 | 確認子代理工具是否被明確封鎖"));
+        assert_eq!(
+            note.as_deref(),
+            Some("核對完整封鎖清單 | 確認子代理工具是否被明確封鎖")
+        );
     }
 
     #[test]
@@ -880,4 +890,3 @@ mod tests {
         assert_eq!(note.as_deref(), Some("測試路徑逃逸"));
     }
 }
-

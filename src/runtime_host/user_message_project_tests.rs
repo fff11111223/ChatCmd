@@ -248,8 +248,18 @@ async fn multi_folder_project_resolves_all_roots_and_authorizes_both_folders() {
     let temp2 = TempDir::new().expect("tempdir2");
     let outside = TempDir::new().expect("outside");
 
-    let folder1 = temp1.path().canonicalize().expect("canon1").to_string_lossy().to_string();
-    let folder2 = temp2.path().canonicalize().expect("canon2").to_string_lossy().to_string();
+    let folder1 = temp1
+        .path()
+        .canonicalize()
+        .expect("canon1")
+        .to_string_lossy()
+        .to_string();
+    let folder2 = temp2
+        .path()
+        .canonicalize()
+        .expect("canon2")
+        .to_string_lossy()
+        .to_string();
 
     let file1 = temp1.path().join("file1.txt");
     let file2 = temp2.path().join("file2.txt");
@@ -258,7 +268,8 @@ async fn multi_folder_project_resolves_all_roots_and_authorizes_both_folders() {
     std::fs::write(&file2, "content2").expect("write file2");
     std::fs::write(&outside_file, "secret").expect("write secret");
 
-    let paths_json = serde_json::to_string(&vec![folder1.clone(), folder2.clone()]).expect("paths json");
+    let paths_json =
+        serde_json::to_string(&vec![folder1.clone(), folder2.clone()]).expect("paths json");
     let project_id = "project-multi-test";
     let canon1 = crate::api::workspaces::canonical_project_path(&folder1);
     sqlx::query(
@@ -301,7 +312,11 @@ async fn multi_folder_project_resolves_all_roots_and_authorizes_both_folders() {
     let mut fs_context1 = OperationContext::new("fs-read-1", &agent_id, "fs_read_text");
     fs_context1.task_id = Some(task_id.to_owned());
     let read1 = host
-        .dispatch("fs_read_text", fs_context1, json!({"path": file1.to_string_lossy().to_string()}))
+        .dispatch(
+            "fs_read_text",
+            fs_context1,
+            json!({"path": file1.to_string_lossy().to_string()}),
+        )
         .await
         .expect("read file1");
     assert_eq!(read1["content"], "content1");
@@ -310,7 +325,11 @@ async fn multi_folder_project_resolves_all_roots_and_authorizes_both_folders() {
     let mut fs_context2 = OperationContext::new("fs-read-2", &agent_id, "fs_read_text");
     fs_context2.task_id = Some(task_id.to_owned());
     let read2 = host
-        .dispatch("fs_read_text", fs_context2, json!({"path": file2.to_string_lossy().to_string()}))
+        .dispatch(
+            "fs_read_text",
+            fs_context2,
+            json!({"path": file2.to_string_lossy().to_string()}),
+        )
         .await
         .expect("read file2");
     assert_eq!(read2["content"], "content2");
@@ -319,7 +338,11 @@ async fn multi_folder_project_resolves_all_roots_and_authorizes_both_folders() {
     let mut fs_outside = OperationContext::new("fs-outside", &agent_id, "fs_read_text");
     fs_outside.task_id = Some(task_id.to_owned());
     let error = host
-        .dispatch("fs_read_text", fs_outside, json!({"path": outside_file.to_string_lossy().to_string()}))
+        .dispatch(
+            "fs_read_text",
+            fs_outside,
+            json!({"path": outside_file.to_string_lossy().to_string()}),
+        )
         .await
         .expect_err("outside file must be rejected");
     assert_eq!(error.code, "policy_denied");

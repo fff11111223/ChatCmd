@@ -429,7 +429,9 @@ fn fallback_submitted_content(
     let delegated_prompt = format!("{request}\n\nCMDGPT_SUBAGENT_ID={subagent_id}");
     match agent_name.map(str::trim).filter(|value| !value.is_empty()) {
         Some(agent_name) => {
-            format!("Use plugin @{agent_name} to perform the following request:\n\n{delegated_prompt}")
+            format!(
+                "Use plugin @{agent_name} to perform the following request:\n\n{delegated_prompt}"
+            )
         }
         None => delegated_prompt,
     }

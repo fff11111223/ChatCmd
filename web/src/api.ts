@@ -1,7 +1,7 @@
 import { tr } from './i18n';
 import type { CompactHistory, CompactJob } from './chatgpt/compact/types';
 import type { UpdateStatus } from './updates/types';
-import type { Agent, AgentInput, ChatGptBridge, ChatGptQueuedMessage, ChatGptRequest, CommandExecutionMode, GlobalSkillDiagnostics, LiveTerminalOutput, LocalSettings, LocalSkillSource, McpStatus, Overview, PlanQuestion, PlanQuestionAnswer, PluginLink, ProblemDetails, ResidentPreview, ResidentUsage, SecretResult, Session, SessionDetail, Skill, SkillInstallPreview, SkillInstallResult, SkillOptionValue, SkillSourceLintResult, Task, TaskActivityDetail, TaskDetail, TaskPage, Tool, ToolPreset, Tunnel, TunnelTestResult, UserSkill, WorkspaceProject } from './types';
+import type { Agent, AgentInput, ChatGptBridge, ChatGptQueuedMessage, ChatGptRequest, CommandExecutionMode, ExternalMcpServer, ExternalMcpServerConfig, ExternalMcpToolSummary, GlobalSkillDiagnostics, LiveTerminalOutput, LocalSettings, LocalSkillSource, McpStatus, Overview, PlanQuestion, PlanQuestionAnswer, PluginLink, ProblemDetails, ResidentPreview, ResidentUsage, SecretResult, Session, SessionDetail, Skill, SkillInstallPreview, SkillInstallResult, SkillOptionValue, SkillSourceLintResult, Task, TaskActivityDetail, TaskDetail, TaskPage, Tool, ToolPreset, Tunnel, TunnelTestResult, UserSkill, WorkspaceProject } from './types';
 
 export class ApiError extends Error {
   constructor(message: string, public status?: number, public problem?: ProblemDetails) { super(message); this.name = 'ApiError'; }
@@ -167,4 +167,15 @@ export const api = {
   databaseDiagnostics: () => request<DatabaseDiagnostics>('/api/local/diagnostics/database'),
   diagnosticLogs: () => request<DiagnosticLogs>('/api/local/diagnostics/logs'),
   deleteAllUserData: () => request<void>('/api/local/diagnostics/user-data', { method: 'DELETE' }),
+  externalMcpServers: () => request<{ servers: ExternalMcpServer[] }>('/api/local/external-mcp/servers').then((r) => r.servers),
+  externalMcpServerConfig: (id: string) => request<{ server: ExternalMcpServerConfig }>(`/api/local/external-mcp/servers/${item(id)}`),
+  createExternalMcpServer: (config: ExternalMcpServerConfig) => request<{ server: ExternalMcpServerConfig }>('/api/local/external-mcp/servers', { method: 'POST', body: json(config) }),
+  updateExternalMcpServer: (id: string, config: ExternalMcpServerConfig) => request<{ server: ExternalMcpServerConfig }>(`/api/local/external-mcp/servers/${item(id)}`, { method: 'PUT', body: json(config) }),
+  deleteExternalMcpServer: (id: string) => request<{ deleted: boolean; id: string }>(`/api/local/external-mcp/servers/${item(id)}`, { method: 'DELETE' }),
+  connectExternalMcpServer: (id: string) => request<{ connected: boolean; toolCount: number; status?: ExternalMcpServer['status'] }>(`/api/local/external-mcp/servers/${item(id)}/connect`, { method: 'POST', body: '{}' }),
+  disconnectExternalMcpServer: (id: string) => request<{ disconnected: boolean; id: string }>(`/api/local/external-mcp/servers/${item(id)}/disconnect`, { method: 'POST', body: '{}' }),
+  testExternalMcpServer: (id: string) => request<{ ok: boolean; toolCount?: number; status?: ExternalMcpServer['status']; error?: string }>(`/api/local/external-mcp/servers/${item(id)}/test`, { method: 'POST', body: '{}' }),
+  listExternalMcpServerTools: (id: string) => request<{ tools: ExternalMcpToolSummary[] }>(`/api/local/external-mcp/servers/${item(id)}/tools`),
+  searchExternalMcpTools: (q = '', serverId?: string, limit = 50, offset = 0) => request<{ tools: ExternalMcpToolSummary[]; total: number; limit: number; offset: number }>(`/api/local/external-mcp/tools/search?q=${encodeURIComponent(q)}${serverId ? `&serverId=${encodeURIComponent(serverId)}` : ''}&limit=${limit}&offset=${offset}`),
+  externalMcpToolSchema: (qualifiedName: string) => request<{ tool: { qualifiedName: string; inputSchema: unknown; description?: string } }>(`/api/local/external-mcp/tools/${item(qualifiedName)}/schema`),
 };

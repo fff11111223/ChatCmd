@@ -65,6 +65,8 @@ pub(crate) struct AppState {
     pub blob_store: chatcmd_runtime::BlobStore,
     pub gui_auth: crate::gui_auth::GuiAuth,
     pub updater: Arc<crate::updater::UpdateManager>,
+    /// Manages all external MCP server connections and the unified tool catalog.
+    pub external_mcp: Arc<crate::external_mcp::ExternalMcpManager>,
     events: broadcast::Sender<AppEvent>,
     connected_clients: AtomicUsize,
 }
@@ -84,6 +86,7 @@ impl AppState {
         plan_prompts: crate::runtime_host::PlanPromptRegistry,
         telemetry: chatcmd_runtime::ToolTelemetryRegistry,
         blob_store: chatcmd_runtime::BlobStore,
+        external_mcp: Arc<crate::external_mcp::ExternalMcpManager>,
         events: broadcast::Sender<AppEvent>,
     ) -> Self {
         let gui_auth = crate::gui_auth::GuiAuth::new(repository.clone());
@@ -103,6 +106,7 @@ impl AppState {
             blob_store,
             gui_auth,
             updater: crate::updater::UpdateManager::new(port),
+            external_mcp,
             events,
             connected_clients: AtomicUsize::new(0),
         }

@@ -73,9 +73,9 @@ fn resolve_and_validate_project_paths(
         for p in list {
             let trimmed = p.trim();
             if !trimmed.is_empty()
-                && !resolved
-                    .iter()
-                    .any(|existing: &String| canonical_project_path(existing) == canonical_project_path(trimmed))
+                && !resolved.iter().any(|existing: &String| {
+                    canonical_project_path(existing) == canonical_project_path(trimmed)
+                })
             {
                 resolved.push(trimmed.to_string());
             }
@@ -153,7 +153,8 @@ pub(super) async fn save_workspace_project(
     Json(input): Json<SaveWorkspaceProject>,
 ) -> Result<Json<Value>, Problem> {
     let name = input.name.trim();
-    let paths = resolve_and_validate_project_paths(name, input.path.as_deref(), input.paths.as_deref())?;
+    let paths =
+        resolve_and_validate_project_paths(name, input.path.as_deref(), input.paths.as_deref())?;
     let chatgpt_project_url = normalize_chatgpt_project_url(input.chatgpt_project_url.as_deref())?;
 
     let existing_rows = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects")
@@ -198,21 +199,23 @@ pub(super) async fn update_workspace_project(
     Json(input): Json<SaveWorkspaceProject>,
 ) -> Result<Json<Value>, Problem> {
     let name = input.name.trim();
-    let paths = resolve_and_validate_project_paths(name, input.path.as_deref(), input.paths.as_deref())?;
+    let paths =
+        resolve_and_validate_project_paths(name, input.path.as_deref(), input.paths.as_deref())?;
     let chatgpt_project_url = normalize_chatgpt_project_url(input.chatgpt_project_url.as_deref())?;
 
-    let existing = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects WHERE id=?")
-        .bind(&id)
-        .fetch_optional(state.repository.pool())
-        .await
-        .map_err(db_problem)?
-        .ok_or_else(|| {
-            Problem::new(
-                StatusCode::NOT_FOUND,
-                "Workspace project not found",
-                "Project no longer exists.",
-            )
-        })?;
+    let existing =
+        sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects WHERE id=?")
+            .bind(&id)
+            .fetch_optional(state.repository.pool())
+            .await
+            .map_err(db_problem)?
+            .ok_or_else(|| {
+                Problem::new(
+                    StatusCode::NOT_FOUND,
+                    "Workspace project not found",
+                    "Project no longer exists.",
+                )
+            })?;
     let old_canonical = existing.get::<String, _>("canonical_path");
     let old_paths: Vec<String> = existing
         .try_get::<Option<String>, _>("paths")
@@ -220,7 +223,10 @@ pub(super) async fn update_workspace_project(
         .flatten()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_else(|| vec![existing.get::<String, _>("path")]);
-    let old_canonical_paths: Vec<String> = old_paths.iter().map(|p| canonical_project_path(p)).collect();
+    let old_canonical_paths: Vec<String> = old_paths
+        .iter()
+        .map(|p| canonical_project_path(p))
+        .collect();
 
     let all_rows = sqlx::query("SELECT id,path,canonical_path,paths FROM workspace_projects")
         .fetch_all(state.repository.pool())
@@ -390,7 +396,6 @@ async fn has_active_descendant(state: &Arc<AppState>, task_id: &str) -> Result<b
     .map_err(db_problem)?;
     Ok(count > 0)
 }
-
 
 fn normalize_chatgpt_project_url(value: Option<&str>) -> Result<Option<String>, Problem> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {

@@ -32,6 +32,7 @@ mod chatgpt_support;
 mod chatgpt_tests;
 mod custom_fonts;
 mod data;
+mod external_mcp;
 mod folders;
 mod overview;
 mod plan_questions;
@@ -166,7 +167,7 @@ pub(super) fn runtime_problem(_: chatcmd_runtime::RuntimeError) -> Problem {
         "local runtime operation failed",
     )
 }
-fn storage_problem(error: chatcmd_core::StorageError) -> Problem {
+pub(super) fn storage_problem(error: chatcmd_core::StorageError) -> Problem {
     match error {
         chatcmd_core::StorageError::NotFound(_) => not_found(),
         chatcmd_core::StorageError::Conflict(_) => Problem::new(

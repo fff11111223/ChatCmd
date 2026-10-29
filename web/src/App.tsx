@@ -8,6 +8,7 @@ import { applyAppFont, applyTaskFontScale, applyUploadedFont, DEFAULT_APP_FONT, 
 import { useAppLanguage, tr } from './i18n';
 import { AgentsPage } from './pages/AgentsPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { ExternalMcpPage } from './pages/ExternalMcpPage';
 import { LiveTerminalPage } from './pages/LiveTerminalPage';
 import { SessionsPage, SessionDetailPage } from './pages/SessionsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -27,7 +28,7 @@ const legacyPaths = ['/login', '/register', '/plans', '/account', '/payment', '/
 
 export default function App() {
   useAppLanguage();
-  return <AuthGate><RealtimeProvider><GlobalDocumentTitleBridge /><SoundNotificationsBridge /><GlobalSubagentFallbackBridge /><GlobalConversationApprovalQueue /><GlobalPlanQuestionQueue /><GlobalChatGptExtensionPrompt /><GlobalUpdatePrompt /><Routes><Route element={<Shell />}><Route index element={<DashboardPage />} /><Route path="tasks/:taskId?" element={<TasksPage />} /><Route path="sessions" element={<SessionsPage />} /><Route path="sessions/terminal/:sessionId" element={<LiveTerminalPage />} /><Route path="sessions/:sessionId" element={<SessionDetailPage />} /><Route path="agents" element={<AgentsPage />} /><Route path="skills" element={<SkillsPage />} /><Route path="settings" element={<SettingsPage />} /><Route path="extension/setup" element={<ExtensionSetupPage />} />{legacyPaths.map((path) => <Route key={path} path={path} element={<Navigate replace to="/" />} />)}<Route path="*" element={<NotFound />} /></Route></Routes></RealtimeProvider></AuthGate>;
+  return <AuthGate><RealtimeProvider><GlobalDocumentTitleBridge /><SoundNotificationsBridge /><GlobalSubagentFallbackBridge /><GlobalConversationApprovalQueue /><GlobalPlanQuestionQueue /><GlobalChatGptExtensionPrompt /><GlobalUpdatePrompt /><Routes><Route element={<Shell />}><Route index element={<DashboardPage />} /><Route path="tasks/:taskId?" element={<TasksPage />} /><Route path="sessions" element={<SessionsPage />} /><Route path="sessions/terminal/:sessionId" element={<LiveTerminalPage />} /><Route path="sessions/:sessionId" element={<SessionDetailPage />} /><Route path="agents" element={<AgentsPage />} /><Route path="mcp-servers" element={<ExternalMcpPage />} /><Route path="skills" element={<SkillsPage />} /><Route path="settings" element={<SettingsPage />} /><Route path="extension/setup" element={<ExtensionSetupPage />} />{legacyPaths.map((path) => <Route key={path} path={path} element={<Navigate replace to="/" />} />)}<Route path="*" element={<NotFound />} /></Route></Routes></RealtimeProvider></AuthGate>;
 }
 
 function GlobalDocumentTitleBridge() {

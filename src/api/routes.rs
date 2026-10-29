@@ -14,9 +14,10 @@ use crate::websocket::AppState;
 use super::{
     Problem, agents::*, auth::*, chatgpt::*, chatgpt_browser_tools::*, chatgpt_compact::*,
     chatgpt_completion::*, chatgpt_native::*, chatgpt_observation::*, chatgpt_queue::*,
-    chatgpt_result::*, custom_fonts::*, data::*, folders::*, overview::*, plan_questions::*,
-    sessions::*, settings::*, skills::*, subagent_fallback::*, system::*, task_controls::*,
-    task_delete::*, task_execution_mode::*, task_views::*, tunnels::*, updates::*, workspaces::*,
+    chatgpt_result::*, custom_fonts::*, data::*, external_mcp::*, folders::*, overview::*,
+    plan_questions::*, sessions::*, settings::*, skills::*, subagent_fallback::*, system::*,
+    task_controls::*, task_delete::*, task_execution_mode::*, task_views::*, tunnels::*,
+    updates::*, workspaces::*,
 };
 
 pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -137,8 +138,10 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tasks/{id}", get(task).delete(delete_task))
         .route("/tasks/{id}/activities/{activity_id}", get(task_activity))
         .route("/tasks/{id}/title", axum::routing::put(set_task_title))
-        .route("/tasks/{id}/project-folder", axum::routing::put(set_task_project_folder))
-
+        .route(
+            "/tasks/{id}/project-folder",
+            axum::routing::put(set_task_project_folder),
+        )
         .route(
             "/tasks/{id}/command-execution-mode",
             get(task_execution_mode).put(set_task_execution_mode),
@@ -167,12 +170,18 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/skills/preview", post(preview_skills))
         .route("/skills/install", post(install_skill))
         .route("/skills/reload-all", post(reload_all_skills))
-        .route("/skills/sources", get(list_local_sources).post(add_local_source))
+        .route(
+            "/skills/sources",
+            get(list_local_sources).post(add_local_source),
+        )
         .route(
             "/skills/sources/{source_id}",
             axum::routing::delete(remove_local_source),
         )
-        .route("/skills/sources/{source_id}/reload", post(reload_local_source))
+        .route(
+            "/skills/sources/{source_id}/reload",
+            post(reload_local_source),
+        )
         .route("/skills/sources/{source_id}/lint", get(lint_local_source))
         .route("/skills/resident-usage", get(resident_usage))
         .route("/skills/resident-preview", get(resident_preview))
@@ -198,6 +207,35 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/diagnostics/user-data",
             axum::routing::delete(delete_all_user_data),
+        )
+        // ── External MCP server management ──────────────────────────────────
+        .route(
+            "/external-mcp/servers",
+            get(list_external_servers).post(create_external_server),
+        )
+        .route(
+            "/external-mcp/servers/{id}",
+            get(get_server_config)
+                .put(update_external_server)
+                .delete(delete_external_server),
+        )
+        .route(
+            "/external-mcp/servers/{id}/connect",
+            post(connect_external_server),
+        )
+        .route(
+            "/external-mcp/servers/{id}/disconnect",
+            post(disconnect_external_server),
+        )
+        .route(
+            "/external-mcp/servers/{id}/test",
+            post(test_external_server),
+        )
+        .route("/external-mcp/servers/{id}/tools", get(list_server_tools))
+        .route("/external-mcp/tools/search", get(search_tools))
+        .route(
+            "/external-mcp/tools/{qualified_name}/schema",
+            get(tool_schema),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
