@@ -389,6 +389,7 @@ function RichText({ content, onRunToolCall }: { content: string; onRunToolCall?:
 }
 
 function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActivity; taskId: string; onStop: (activity: ToolActivity) => void; browser?: BrowserThinking | null }) {
+  const targetTaskId = activity.taskId || taskId;
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<TaskActivityDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -400,7 +401,7 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
   const fetchDetail = (showModal: boolean) => {
     if (showModal) setOpen(true);
     setDetail(null); setDetailError(''); setDetailLoading(true);
-    void api.taskActivity(taskId, activity.id)
+    void api.taskActivity(targetTaskId, activity.id)
       .then(setDetail)
       .catch((reason) => setDetailError(reason instanceof Error ? reason.message : tr('Could not load tool details.')))
       .finally(() => setDetailLoading(false));
@@ -419,11 +420,11 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
 
   // Auto-fetch detail when approval is pending so we get the real arguments (cwd etc.) for the preview.
   useEffect(() => {
-    if (approvalPending && taskId && !detail && !detailLoading) {
+    if (approvalPending && targetTaskId && !detail && !detailLoading) {
       fetchDetail(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [approvalPending, taskId]);
+  }, [approvalPending, targetTaskId]);
 
   // Build approval preview from the resolved activity (which has full input once detail loads).
   const approvalCommand = approvalPending ? activityCommand(resolvedActivity) : '';
@@ -437,7 +438,7 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
       <ChevronDown className="activity-chevron" aria-hidden="true" />
     </button>
     {stoppable && <button type="button" className="activity-stop-button" aria-label={tr('Stop {name}', { name: activityLabel(activity) })} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onStop(activity); }}><CircleStop aria-hidden="true" /><span>{tr('Stop')}</span></button>}
-    {approvalPending && taskId && <>
+    {approvalPending && targetTaskId && <>
       <div className="approval-command-preview">
         {detailLoading && !approvalCommand
           ? <span className="approval-command-loading"><LoaderCircle className="spin" aria-hidden="true" />{tr('Loading…')}</span>
@@ -450,16 +451,16 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
               </>
             : <span className="approval-command-text approval-command-unknown">{tr('Click ▸ above to view full tool details')}</span>}
       </div>
-      <ApprovalDecisionActions target={{ taskId, activityId: activity.id, turnId: activity.turnId }} reusable={isSafeReadApproval(activity.input)} />
+      <ApprovalDecisionActions target={{ taskId: targetTaskId, activityId: activity.id, turnId: activity.turnId }} reusable={isSafeReadApproval(activity.input)} />
     </>}
     {open && <Modal className="tool-activity-modal" title={activityLabel(activity)} description={`${formatClockTime(activity.startedAt)} · ${activityDuration(activity.startedAt, activity.finishedAt ?? new Date().toISOString())}`} close={closePopup}>
       {detailLoading
         ? <div className="activity-popup-content"><div className="activity-detail-loading" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{tr('Loading…')}</span></div></div>
         : detailError
           ? <div className="activity-popup-content"><div className="activity-error-detail" role="alert"><div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Could not load tool details.')}</strong></div><div className="activity-error-message">{detailError}</div><button className="button secondary compact" type="button" onClick={loadDetail}>{tr('Reload')}</button></div></div>
-          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={taskId} browser={browser} onResend={() => { closePopup(); setResendOpen(true); }} />}
+          : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={targetTaskId} browser={browser} onResend={() => { closePopup(); setResendOpen(true); }} />}
     </Modal>}
-    {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={taskId} close={() => setResendOpen(false)} />}
+    {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={targetTaskId} close={() => setResendOpen(false)} />}
   </div>;
 }
 

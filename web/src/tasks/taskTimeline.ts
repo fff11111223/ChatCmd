@@ -20,6 +20,7 @@ export type ToolActivity = {
   startedAt: string;
   finishedAt?: string;
   turnId?: string;
+  taskId?: string;
   precedingText?: string;
   /** The model's note/annotation for this tool call, extracted from the chatcmd_tool_call JSON block. */
   note?: string;
@@ -261,6 +262,7 @@ export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThi
         status: stringValue(payload.status) || 'started',
         startedAt: event.occurredAt,
         turnId: event.turnId,
+        taskId: event.taskId,
         precedingText: precedingMessage || undefined,
         note: toolNote,
       };
@@ -307,6 +309,8 @@ export function buildProcessBlocks(events: TimelineEvent[], browser?: BrowserThi
           error: stringValue(payload.errorMessage) || stringValue(payload.errorCode),
           startedAt: event.occurredAt,
           finishedAt: event.occurredAt,
+          turnId: event.turnId,
+          taskId: event.taskId,
         });
       }
       continue;

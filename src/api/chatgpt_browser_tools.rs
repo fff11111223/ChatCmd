@@ -297,7 +297,7 @@ pub(super) async fn browser_tool_call(
     //
     // call_id is used as request_id so RuntimeHost idempotency keys are
     // stable per tool call across retries.
-    let mut context = OperationContext::new(call_id.to_owned(), agent_id, tool.to_owned());
+    let mut context = OperationContext::new(call_id.to_owned(), agent_id.clone(), tool.to_owned());
     context.task_id = Some(task_id.clone());
     context.turn_id = Some(turn_id.clone());
     context.conversation_scope_id = conversation_id
@@ -306,62 +306,11 @@ pub(super) async fn browser_tool_call(
         .map(|id| format!("openai:{id}"));
     // mcp_session_id intentionally left as None for browser bridge calls.
 
-    // 8. Execute via RuntimeHost::call() -- the ONE AND ONLY entry point for local tools.
-    //    For external MCP tools (mcp__{server_id}__{tool_name}), route through ExternalMcpManager.
-    //    authorize_tool / ensure_call_identity / authorize_execution /
-    //    approval / activity registration / timeline persistence / dispatch
-    //    are all invoked through this single path for local tools.
-    let result = if tool.starts_with("mcp__") {
-        // External MCP tool dispatch — routes to the appropriate server connection.
-        // We still record the call in the timeline via the result path below.
-        let raw_result = state
-            .external_mcp
-            .call_tool(tool, input.arguments.clone())
-            .await;
-
-        // Apply the same byte budget as local commands. MCP text results may be large.
-        let value = match raw_result {
-            Ok(mut val) => {
-                // Guard string results
-                if let Value::String(ref s) = val {
-                    if s.len() > MAX_AI_COMMAND_RESULT_BYTES {
-                        val = Value::String(format!(
-                            "[MCP result truncated: {} bytes, limit {} bytes]\n{}",
-                            s.len(),
-                            MAX_AI_COMMAND_RESULT_BYTES,
-                            &s[..MAX_AI_COMMAND_RESULT_BYTES],
-                        ));
-                    }
-                }
-                Ok(val)
-            }
-            Err(e) => Err(chatcmd_runtime::RuntimeError::new("mcp_error", e)),
-        };
-
-        // Persist tool_result event in timeline so idempotency and history work correctly.
-        if let Ok(ref result_value) = value {
-            let payload = serde_json::to_string(&serde_json::json!({
-                "activityId": call_id,
-                "tool": tool,
-                "content": result_value,
-            }))
-            .unwrap_or_default();
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO timeline_events \
-                 (task_id, turn_id, actor, kind, payload_json, created_at_ms) \
-                 VALUES (?, ?, 'assistant', 'tool_result', ?, ?)",
-            )
-            .bind(&task_id)
-            .bind(&turn_id)
-            .bind(&payload)
-            .bind(super::now_ms())
-            .execute(state.repository.pool())
-            .await;
-        }
-        value
-    } else {
-        state.runtime.call(tool, context, input.arguments).await
-    };
+    // 8. Execute via RuntimeHost::call() -- the ONE AND ONLY entry point.
+    //    All local tools, MCP discovery tools, and external MCP tools are routed
+    //    through this single pipeline, ensuring proper authorization, activity
+    //    tracking, timeline persistence (tool_call and tool_result), and realtime events.
+    let result = state.runtime.call(tool, context, input.arguments).await;
 
     if let Some(ref note) = note_to_save {
         let _ = sqlx::query(
@@ -586,5 +535,166 @@ Core instructions
             footer.map_or(true, |v| v.is_null()),
             "residentFooter should be null when no resident skills"
         );
+    }
+
+    #[tokio::test]
+    async fn browser_tool_call_mcp_discovery_flow() {
+        let (host, agent_id, directory) =
+            crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(
+            host.test_app_state(directory.path().join("chatcmd.db").display().to_string()),
+        );
+        let now = super::super::now_ms();
+
+        let task_id = "task-mcp-flow";
+        let request_id = "request-mcp-flow";
+        sqlx::query(
+            "INSERT INTO tasks(id,agent_id,device_id,title,source,status,generation,created_at_ms,updated_at_ms) \
+             VALUES(?,?,?,'MCP test','chatgpt_web','running',1,?,?)",
+        )
+        .bind(task_id)
+        .bind(&agent_id)
+        .bind(state.device.id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("seed task");
+        sqlx::query(
+            "INSERT INTO chatgpt_bridge_requests(id,task_id,turn_id,agent_id,model,user_content,submitted_content,status,created_at_ms,updated_at_ms) \
+             VALUES(?,?,?,?,'Auto','hello','hello','running',?,?)",
+        )
+        .bind(request_id)
+        .bind(task_id)
+        .bind("turn-mcp-flow")
+        .bind(&agent_id)
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("seed request");
+
+        // Seed mock tools into catalog
+        state.external_mcp.catalog().register_server_tools(
+            "rea",
+            vec![
+                chatcmd_mcp::client::ExternalToolDefinition {
+                    server_id: "rea".to_string(),
+                    original_name: "list_documents".to_string(),
+                    qualified_name: "mcp__rea__list_documents".to_string(),
+                    display_name: "list_documents".to_string(),
+                    description: "Lists open binary documents".to_string(),
+                    input_schema: json!({ "type": "object" }),
+                    annotations: None,
+                },
+                chatcmd_mcp::client::ExternalToolDefinition {
+                    server_id: "rea".to_string(),
+                    original_name: "open_binary".to_string(),
+                    qualified_name: "mcp__rea__open_binary".to_string(),
+                    display_name: "open_binary".to_string(),
+                    description: "Opens a binary file".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": { "path": { "type": "string" } },
+                        "required": ["path"]
+                    }),
+                    annotations: None,
+                },
+            ],
+        );
+
+        // Seed catalog so group-mcp and tools exist in repository, then grant test agent permissions
+        crate::catalog_seed::seed_catalog(&state.repository).await.expect("seed catalog");
+        use chatcmd_core::ToolCatalogStore as _;
+        let agent_db_id = chatcmd_core::AgentId::new(&agent_id).unwrap();
+        let tools = state.repository.list_tools().await.expect("tools");
+        let mut allowed = state.repository.agent_allowed_tool_ids(&agent_db_id).await.expect("allowed");
+        for t in &tools {
+            if matches!(t.key.as_str(), "mcp_servers_list" | "mcp_tools_search" | "mcp_tool_schema" | "mcp__rea") {
+                allowed.push(t.id.clone());
+            }
+        }
+        state.repository.set_agent_allowed_tools(&agent_db_id, &allowed).await.expect("set allowed");
+
+        // 1. Test mcp_servers_list
+        let call_list = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_mcp_001".to_string(),
+            tool: "mcp_servers_list".to_string(),
+            note: None,
+            arguments: json!({}),
+        };
+        let res_list = browser_tool_call(axum::extract::State(state.clone()), Json(call_list))
+            .await
+            .expect("servers list call");
+        assert_eq!(res_list.0.get("ok").and_then(Value::as_bool), Some(true));
+
+        // 2. Test mcp_tools_search
+        let call_search = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_mcp_002".to_string(),
+            tool: "mcp_tools_search".to_string(),
+            note: None,
+            arguments: json!({ "query": "open_binary" }),
+        };
+        let res_search = browser_tool_call(axum::extract::State(state.clone()), Json(call_search))
+            .await
+            .expect("tools search call");
+        assert_eq!(res_search.0.get("ok").and_then(Value::as_bool), Some(true));
+        let search_result = res_search.0.get("result").unwrap();
+        assert_eq!(search_result.get("total").and_then(Value::as_u64), Some(1));
+        let tool_item = &search_result.get("tools").unwrap()[0];
+        assert_eq!(
+            tool_item.get("tool").and_then(Value::as_str),
+            Some("mcp__rea__open_binary")
+        );
+
+        // 3. Test mcp_tool_schema (success)
+        let call_schema = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_mcp_003".to_string(),
+            tool: "mcp_tool_schema".to_string(),
+            note: None,
+            arguments: json!({ "tool": "mcp__rea__open_binary" }),
+        };
+        let res_schema = browser_tool_call(axum::extract::State(state.clone()), Json(call_schema))
+            .await
+            .expect("tool schema call");
+        assert_eq!(res_schema.0.get("ok").and_then(Value::as_bool), Some(true));
+        let schema_result = res_schema.0.get("result").unwrap();
+        assert_eq!(
+            schema_result.get("tool").and_then(Value::as_str),
+            Some("mcp__rea__open_binary")
+        );
+        let props = schema_result.pointer("/inputSchema/properties/path");
+        assert!(props.is_some(), "path property should be present in schema");
+
+        // 4. Test mcp_tool_schema (missing argument)
+        let call_schema_empty = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_mcp_004".to_string(),
+            tool: "mcp_tool_schema".to_string(),
+            note: None,
+            arguments: json!({}),
+        };
+        let res_schema_empty = browser_tool_call(axum::extract::State(state.clone()), Json(call_schema_empty))
+            .await
+            .expect("tool schema empty call");
+        assert_eq!(res_schema_empty.0.get("ok").and_then(Value::as_bool), Some(false));
+
+        // 5. Test policy denial when external server is not in agent allowlist
+        let call_denied = BrowserToolCall {
+            request_id: request_id.to_string(),
+            call_id: "call_mcp_005".to_string(),
+            tool: "mcp__unauthorized_server__cmd".to_string(),
+            note: None,
+            arguments: json!({}),
+        };
+        let res_denied = browser_tool_call(axum::extract::State(state.clone()), Json(call_denied))
+            .await
+            .expect("tool call denied");
+        assert_eq!(res_denied.0.get("ok").and_then(Value::as_bool), Some(false));
+        let error_code = res_denied.0.pointer("/error/code").and_then(Value::as_str);
+        assert_eq!(error_code, Some("policy_denied"));
     }
 }

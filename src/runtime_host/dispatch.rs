@@ -485,7 +485,115 @@ impl RuntimeHost {
                 self.wait_for_subagent_reports(&context, &input).await
             }
             "agent_turn_complete" => self.complete_agent_turn(&context, arguments).await,
-            _ => Err(RuntimeError::new("tool_not_found", "unknown MCP tool")),
+            _ => {
+                // Route MCP meta-discovery tools and qualified external MCP tools.
+                // Authorization has already been checked by call_persisted_inner.
+                let is_mcp_meta = matches!(
+                    tool,
+                    "mcp_servers_list" | "mcp_tools_search" | "mcp_tool_schema"
+                );
+                let is_mcp_call = tool.starts_with("mcp__");
+                if is_mcp_meta || is_mcp_call {
+                    let Some(external_mcp) = self.external_mcp.get() else {
+                        return Err(RuntimeError::new(
+                            "mcp_unavailable",
+                            "External MCP manager is not initialized",
+                        ));
+                    };
+                    if is_mcp_meta {
+                        if tool == "mcp_servers_list" {
+                            let servers = external_mcp.list_servers().await;
+                            return Ok(json!({
+                                "servers": servers,
+                                "tip": "Use mcp_tools_search with a keyword to discover tools, or mcp_tool_schema to view parameters."
+                            }));
+                        } else if tool == "mcp_tools_search" {
+                            let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
+                            let server_id = arguments
+                                .get("serverId")
+                                .or_else(|| arguments.get("server_id"))
+                                .and_then(Value::as_str);
+                            let limit = arguments
+                                .get("limit")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(20)
+                                .clamp(1, 50) as usize;
+                            let offset = arguments
+                                .get("offset")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0) as usize;
+                            let (tools_found, total) = external_mcp.search_tools(query, server_id, limit, offset);
+                            let has_more = offset + tools_found.len() < total;
+                            let formatted_tools: Vec<Value> = tools_found
+                                .into_iter()
+                                .map(|t| json!({
+                                    "tool": t.qualified_name,
+                                    "server": t.server_id,
+                                    "originalName": t.original_name,
+                                    "description": t.description,
+                                }))
+                                .collect();
+                            return Ok(json!({
+                                "query": query,
+                                "serverId": server_id,
+                                "total": total,
+                                "offset": offset,
+                                "limit": limit,
+                                "hasMore": has_more,
+                                "tools": formatted_tools,
+                                "nextStep": "Use mcp_tool_schema with the qualified tool name to get its inputSchema before calling.",
+                            }));
+                        } else {
+                            // mcp_tool_schema
+                            let target_tool = arguments
+                                .get("tool")
+                                .or_else(|| arguments.get("qualifiedName"))
+                                .or_else(|| arguments.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .trim();
+                            if target_tool.is_empty() {
+                                return Err(RuntimeError::new(
+                                    "invalid_arguments",
+                                    "Missing 'tool' parameter. Provide a qualified tool name like 'mcp__rea__open_binary'.",
+                                ));
+                            }
+                            if let Some(tool_def) = external_mcp.get_tool_schema(target_tool) {
+                                return Ok(json!({
+                                    "tool": tool_def.qualified_name,
+                                    "serverId": tool_def.server_id,
+                                    "originalName": tool_def.original_name,
+                                    "description": tool_def.description,
+                                    "inputSchema": tool_def.input_schema,
+                                }));
+                            } else {
+                                return Err(RuntimeError::new(
+                                    "tool_not_found",
+                                    format!("MCP tool '{}' not found. Use mcp_tools_search to find available tools.", target_tool),
+                                ));
+                            }
+                        }
+                    } else {
+                        // Qualified external MCP call: mcp__<server>__<tool>
+                        let mut val = external_mcp
+                            .call_tool(tool, arguments)
+                            .await
+                            .map_err(|e| RuntimeError::new("mcp_error", e))?;
+                        if let Value::String(ref s) = val {
+                            if s.len() > 64 * 1024 {
+                                val = Value::String(format!(
+                                    "[MCP result truncated: {} bytes, limit {} bytes]\n{}",
+                                    s.len(),
+                                    64 * 1024,
+                                    &s[..64 * 1024],
+                                ));
+                            }
+                        }
+                        return Ok(val);
+                    }
+                }
+                Err(RuntimeError::new("tool_not_found", "unknown MCP tool"))
+            }
         }
     }
 }

@@ -182,13 +182,21 @@ pub(crate) async fn task_activity(
     State(state): State<Arc<AppState>>,
     Path((id, activity_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, Problem> {
-    let rows = sqlx::query("SELECT event_id,kind,payload_json FROM timeline_events WHERE task_id=? AND kind IN ('tool_call','tool_result') AND (event_id=? OR json_extract(payload_json,'$.activityId')=?) ORDER BY created_at_ms ASC,event_id ASC")
+    let mut rows = sqlx::query("SELECT event_id,kind,payload_json FROM timeline_events WHERE task_id=? AND kind IN ('tool_call','tool_result') AND (event_id=? OR json_extract(payload_json,'$.activityId')=?) ORDER BY created_at_ms ASC,event_id ASC")
         .bind(&id)
         .bind(&activity_id)
         .bind(&activity_id)
         .fetch_all(state.repository.pool())
         .await
         .map_err(db_problem)?;
+    if rows.is_empty() {
+        rows = sqlx::query("SELECT event_id,kind,payload_json FROM timeline_events WHERE kind IN ('tool_call','tool_result') AND (event_id=? OR json_extract(payload_json,'$.activityId')=?) ORDER BY created_at_ms ASC,event_id ASC")
+            .bind(&activity_id)
+            .bind(&activity_id)
+            .fetch_all(state.repository.pool())
+            .await
+            .map_err(db_problem)?;
+    }
     if rows.is_empty() {
         return Err(not_found());
     }
@@ -210,7 +218,7 @@ pub(crate) async fn task_activity(
             }
         }
         if kind == "tool_result" {
-            if let Some(value) = payload.get("output") {
+            if let Some(value) = payload.get("output").or_else(|| payload.get("content")) {
                 detail.insert("output".to_owned(), value.clone());
             }
             if payload.get("payloadExternalized").and_then(Value::as_bool) == Some(true) {
@@ -246,10 +254,9 @@ pub(crate) async fn task_activity(
     }
     if let Some(artifact_id) = external_artifact_ref.as_deref() {
         let row = sqlx::query(
-            "SELECT artifact_registry.relative_path,tasks.agent_id FROM artifact_registry JOIN tasks ON tasks.id=artifact_registry.task_id WHERE artifact_registry.id=? AND artifact_registry.task_id=? LIMIT 1",
+            "SELECT artifact_registry.relative_path,tasks.agent_id FROM artifact_registry JOIN tasks ON tasks.id=artifact_registry.task_id WHERE artifact_registry.id=? LIMIT 1",
         )
         .bind(artifact_id)
-        .bind(&id)
         .fetch_optional(state.repository.pool())
         .await
         .map_err(db_problem)?;

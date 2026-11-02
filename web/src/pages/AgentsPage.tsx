@@ -7,7 +7,7 @@ import type { Agent, AgentInput, PluginLink, SecretResult, Tool, Tunnel } from '
 import { useLoad } from '../useLoad';
 
 const blank: AgentInput = { name: '', enabled: true, toolIds: [] };
-const groupOrder = ['group-device', 'group-terminal', 'group-files', 'group-git', 'group-process', 'group-skills', 'group-tasks'];
+const groupOrder = ['group-device', 'group-terminal', 'group-files', 'group-git', 'group-process', 'group-skills', 'group-tasks', 'group-mcp'];
 const groupNames: Record<string, string> = {
   'group-device': 'Device',
   'group-terminal': 'Terminal',
@@ -16,6 +16,7 @@ const groupNames: Record<string, string> = {
   'group-process': 'Processes',
   'group-skills': 'Skills',
   'group-tasks': 'Tasks & agent lifecycle',
+  'group-mcp': 'External MCP (外部 MCP)',
 };
 
 export function AgentsPage() {

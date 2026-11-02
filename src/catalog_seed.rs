@@ -15,8 +15,9 @@ pub(super) async fn seed_catalog(
         tool_group("group-process", "process", "Processes", 50),
         tool_group("group-skills", "skills", "Skills", 60),
         tool_group("group-tasks", "tasks", "Tasks & agent lifecycle", 70),
+        tool_group("group-mcp", "mcp", "External MCP (外部 MCP)", 80),
     ];
-    let tools = chatcmd_mcp::TOOL_NAMES
+    let mut tools = chatcmd_mcp::TOOL_NAMES
         .iter()
         .map(|name| ToolDefinition {
             id: seeded_tool_id(name),
@@ -46,6 +47,49 @@ pub(super) async fn seed_catalog(
             enabled: true,
         })
         .collect::<Vec<_>>();
+
+    // Seed MCP discovery and external tools so they appear in Agent permissions UI
+    tools.push(ToolDefinition {
+        id: "tool-mcp-servers-list".to_string(),
+        key: "mcp_servers_list".to_string(),
+        group_id: "group-mcp".to_string(),
+        title: "mcp servers list".to_string(),
+        description: "List configured external MCP servers and their status".to_string(),
+        input_schema_json: "{}".to_string(),
+        capabilities: vec![ToolCapability::Read],
+        enabled: true,
+    });
+    tools.push(ToolDefinition {
+        id: "tool-mcp-tools-search".to_string(),
+        key: "mcp_tools_search".to_string(),
+        group_id: "group-mcp".to_string(),
+        title: "mcp tools search".to_string(),
+        description: "Search external MCP tools by keyword".to_string(),
+        input_schema_json: "{}".to_string(),
+        capabilities: vec![ToolCapability::Read],
+        enabled: true,
+    });
+    tools.push(ToolDefinition {
+        id: "tool-mcp-tool-schema".to_string(),
+        key: "mcp_tool_schema".to_string(),
+        group_id: "group-mcp".to_string(),
+        title: "mcp tool schema".to_string(),
+        description: "View parameter schema of an external MCP tool".to_string(),
+        input_schema_json: "{}".to_string(),
+        capabilities: vec![ToolCapability::Read],
+        enabled: true,
+    });
+    tools.push(ToolDefinition {
+        id: "tool-mcp-server-rea".to_string(),
+        key: "mcp__rea".to_string(),
+        group_id: "group-mcp".to_string(),
+        title: "REA (External MCP Server)".to_string(),
+        description: "Allow calling reverse engineering tools on REA MCP server".to_string(),
+        input_schema_json: "{}".to_string(),
+        capabilities: vec![ToolCapability::Read],
+        enabled: true,
+    });
+
     let safe_ids = tools
         .iter()
         .filter(|tool| !tool.capabilities.contains(&ToolCapability::Destructive))
@@ -65,6 +109,12 @@ pub(super) async fn seed_catalog(
     let write_id = seeded_tool_id("fs_write_text");
     let replace_id = seeded_tool_id("fs_replace_text");
     let apply_edits_id = seeded_tool_id("fs_apply_edits");
+    let mcp_ids = [
+        "tool-mcp-servers-list",
+        "tool-mcp-tools-search",
+        "tool-mcp-tool-schema",
+        "tool-mcp-server-rea",
+    ];
     for agent in repository.list_agents().await? {
         let mut allowed = repository.agent_allowed_tool_ids(&agent.id).await?;
         let mut changed = false;
@@ -75,6 +125,16 @@ pub(super) async fn seed_catalog(
         if allowed.contains(&write_id) && !allowed.contains(&apply_edits_id) {
             allowed.push(apply_edits_id.clone());
             changed = true;
+        }
+        // If an agent has skills_list (meaning it's an interactive assistant like worker),
+        // initialize it with MCP tools so they appear as enabled by default.
+        if allowed.contains(&seeded_tool_id("skills_list")) {
+            for mcp_id in &mcp_ids {
+                if !allowed.contains(&mcp_id.to_string()) {
+                    allowed.push(mcp_id.to_string());
+                    changed = true;
+                }
+            }
         }
         if changed {
             repository

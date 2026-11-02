@@ -57,6 +57,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use crate::external_mcp::ExternalMcpManager;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::websocket::AppEvent;
@@ -89,6 +90,7 @@ pub(crate) struct RuntimeHost {
     telemetry: chatcmd_runtime::ToolTelemetryRegistry,
     repository_index_watchers: Arc<std::sync::Mutex<Vec<notify::RecommendedWatcher>>>,
     repository_index_reconcile_started: Arc<AtomicBool>,
+    external_mcp: Arc<std::sync::OnceLock<Arc<ExternalMcpManager>>>,
 }
 
 impl RuntimeHost {
@@ -128,7 +130,21 @@ impl RuntimeHost {
             ),
             repository_index_watchers: Arc::new(std::sync::Mutex::new(Vec::new())),
             repository_index_reconcile_started: Arc::new(AtomicBool::new(false)),
+            external_mcp: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Wire up the shared ExternalMcpManager so that `dispatch()` can route
+    /// external MCP tool calls (mcp__<server>__<tool>) without going through
+    /// the chatgpt_browser_tools special path.  Call this once, right after
+    /// both objects are created in main.
+    pub(crate) fn set_external_mcp(&self, manager: Arc<ExternalMcpManager>) {
+        let _ = self.external_mcp.set(manager);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_external_mcp(&self) -> Option<Arc<ExternalMcpManager>> {
+        self.external_mcp.get().cloned()
     }
 
     pub(crate) async fn mark_repository_index_stale_for_path(
@@ -364,6 +380,8 @@ impl RuntimeHost {
 
     #[cfg(test)]
     pub(crate) fn test_app_state(&self, database_path: String) -> crate::websocket::AppState {
+        let external_mcp = Arc::new(crate::external_mcp::ExternalMcpManager::new());
+        self.set_external_mcp(external_mcp.clone());
         crate::websocket::AppState::new(
             self.repository.clone(),
             database_path,
@@ -377,7 +395,7 @@ impl RuntimeHost {
             self.plan_prompt_registry(),
             self.telemetry_registry(),
             self.blob_store.clone(),
-            Arc::new(crate::external_mcp::ExternalMcpManager::new()),
+            external_mcp,
             self.events.clone(),
         )
     }

@@ -100,6 +100,21 @@
 | `agent_subagent_wait` | 等待或讀取子 Agent 結果 |
 | `agent_turn_complete` | 完成 Agent 回合 |
 
+### 外部 MCP 工具（探索與呼叫）
+
+| 工具 | 用途與提醒 |
+|---|---|
+| `mcp_servers_list` | 列出所有已設定的外部 MCP Server 及其連線狀態與工具數量 |
+| `mcp_tools_search` | 搜尋外部 MCP 工具。參數：`query`（關鍵字）、`serverId`（可選，限定 Server）、`limit`、`offset`。**先搜尋再呼叫**，不要猜工具名稱 |
+| `mcp_tool_schema` | 取得特定工具的完整 inputSchema。參數：`tool`（合格名稱，如 `mcp__rea__open_binary`）。**取得 schema 後才發起真正的工具呼叫** |
+| `mcp__{server_id}__{tool_name}` | 透過 ChatCMD 外部 MCP Client 呼叫外部工具，例如 `mcp__rea__list_documents`。必須先透過 `mcp_tool_schema` 確認參數格式再呼叫 |
+
+外部 MCP 工具完整使用流程：
+1. `mcp_servers_list` 確認哪些 Server 已連線
+2. `mcp_tools_search{"query":"關鍵字"}` 找目標工具
+3. `mcp_tool_schema{"tool":"mcp__rea__xxx"}` 取得 inputSchema
+4. 依 schema 參數發起 `mcp__rea__xxx` 呼叫
+
 `task_*` 與 `agent_*` 是可選的高階任務與代理流程工具，不是所有任務都必須使用。一般工具操作可直接使用對應工具；只有需要任務狀態、Agent 回合控制、進度回報、使用者確認或將可獨立工作的內容委派給子 Agent 時，才使用相應的 `task_*` 或 `agent_*` 工具。詳細參數與呼叫方式以各工具的 `examples/<tool>.md` 為準。
 
 ## 5. 出錯時怎麼辦

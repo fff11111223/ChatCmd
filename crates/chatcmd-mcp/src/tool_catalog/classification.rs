@@ -11,7 +11,11 @@ fn operation_class(name: &str) -> ToolOperationClass {
         | "task_get"
         | "task_list"
         | "task_artifact_list"
-        | "blob_status" => ToolOperationClass::MetadataRead,
+        | "blob_status"
+        | "mcp_servers_list"
+        | "mcp_tools_search"
+        | "mcp_tool_schema" => ToolOperationClass::MetadataRead,
+        name if name.starts_with("mcp__") => ToolOperationClass::ProcessExecution,
         "fs_list" | "fs_list_v2" | "fs_stat" | "fs_batch_stat" | "fs_read_text"
         | "fs_read_text_v2" | "fs_batch_read" | "fs_find" | "fs_search" | "task_artifact_read"
         | "skill_read" | "skills_list" | "project_context" => ToolOperationClass::ContentRead,
@@ -69,7 +73,11 @@ fn risk_class(name: &str) -> ToolRiskClass {
         | "task_get"
         | "task_list"
         | "task_artifact_list"
-        | "blob_status" => ToolRiskClass::MetadataRead,
+        | "blob_status"
+        | "mcp_servers_list"
+        | "mcp_tool_schema" => ToolRiskClass::MetadataRead,
+        "mcp_tools_search" => ToolRiskClass::ComputeRead,
+        name if name.starts_with("mcp__") => ToolRiskClass::ProcessExecution,
         "fs_read_text" | "fs_read_text_v2" | "fs_batch_read" | "task_artifact_read"
         | "skill_read" | "shell_read" => ToolRiskClass::ContentRead,
         "fs_find" | "fs_search" | "skills_list" | "project_context" => ToolRiskClass::ComputeRead,

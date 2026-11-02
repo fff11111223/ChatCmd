@@ -287,6 +287,9 @@ async fn run_server(ready: Option<std::sync::mpsc::Sender<()>>) -> Result<()> {
         manager.load_and_connect_all(configs).await;
         manager
     };
+    // Share the ExternalMcpManager with RuntimeHost so dispatch() can route
+    // mcp__<server>__<tool> calls through the unified tool-call pipeline.
+    runtime.set_external_mcp(external_mcp.clone());
 
     let state = Arc::new(AppState::new(
         repository,

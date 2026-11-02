@@ -103,6 +103,23 @@ pub(super) async fn create_external_server(
     // Register in manager
     state.external_mcp.upsert_config(config.clone()).await;
 
+    // Sync tool definition in tools table so it appears in Agents permission UI
+    let tool_id = format!("tool-mcp-server-{}", config.id);
+    let tool_key = format!("mcp__{}", config.id);
+    let tool_title = format!("{} (External MCP Server)", config.name);
+    let tool_desc = config.description.clone().unwrap_or_else(|| format!("Allow calling tools on {} MCP server", config.name));
+    let _ = sqlx::query(
+        "INSERT INTO tools(id, key, group_id, title, description, input_schema_json, capabilities_json, enabled) \
+         VALUES(?, ?, 'group-mcp', ?, ?, '{}', '[\"Read\"]', 1) \
+         ON CONFLICT(id) DO UPDATE SET key=excluded.key, title=excluded.title, description=excluded.description"
+    )
+    .bind(&tool_id)
+    .bind(&tool_key)
+    .bind(&tool_title)
+    .bind(&tool_desc)
+    .execute(state.repository.pool())
+    .await;
+
     Ok(Json(json!({ "server": config })))
 }
 
@@ -131,6 +148,23 @@ pub(super) async fn update_external_server(
 
     state.external_mcp.upsert_config(config.clone()).await;
 
+    // Update tool definition in tools table
+    let tool_id = format!("tool-mcp-server-{}", config.id);
+    let tool_key = format!("mcp__{}", config.id);
+    let tool_title = format!("{} (External MCP Server)", config.name);
+    let tool_desc = config.description.clone().unwrap_or_else(|| format!("Allow calling tools on {} MCP server", config.name));
+    let _ = sqlx::query(
+        "INSERT INTO tools(id, key, group_id, title, description, input_schema_json, capabilities_json, enabled) \
+         VALUES(?, ?, 'group-mcp', ?, ?, '{}', '[\"Read\"]', 1) \
+         ON CONFLICT(id) DO UPDATE SET key=excluded.key, title=excluded.title, description=excluded.description"
+    )
+    .bind(&tool_id)
+    .bind(&tool_key)
+    .bind(&tool_title)
+    .bind(&tool_desc)
+    .execute(state.repository.pool())
+    .await;
+
     Ok(Json(json!({ "server": config })))
 }
 
@@ -149,6 +183,13 @@ pub(super) async fn delete_external_server(
     let mut configs = load_configs(&state).await?;
     configs.retain(|c| c.id != id);
     save_configs(&state, &configs).await?;
+
+    // Remove from tools table
+    let tool_id = format!("tool-mcp-server-{id}");
+    let _ = sqlx::query("DELETE FROM tools WHERE id = ?")
+        .bind(&tool_id)
+        .execute(state.repository.pool())
+        .await;
 
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
