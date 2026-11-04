@@ -158,3 +158,37 @@ test('returns empty array when JSON is incomplete during streaming', () => {
   assert.equal(calls.length, 0);
   assert.equal(bridge.hasPendingToolCalls(streamingText), false);
 });
+
+test('tells model when tool result is too long to send through browser bridge', async () => {
+  const context = {
+    console,
+    localStorage: { getItem: () => null },
+    globalThis: {},
+  };
+  context.globalThis = context;
+  const hugeOutput = 'x'.repeat(25000);
+  context.ChatCmdRuntime = {
+    sendMessage: async (msg) => {
+      if (msg.type === 'chatcmd-chatgpt-tool-call') {
+        return { ok: true, result: hugeOutput };
+      }
+      return { ok: true };
+    },
+  };
+  vm.createContext(context);
+  const code = readFileSync(join(__dirname, 'content-chatgpt-tool-bridge.js'), 'utf8');
+  vm.runInContext(code, context);
+
+  let submittedText = '';
+  const text = '```chatcmd_tool_call\n{"id":"call_031","tool":"fs_search","arguments":{}}\n```';
+  await context.ChatCmdToolBridge.runPendingCalls('req-test', text, async (reply) => {
+    submittedText = reply;
+  });
+
+  assert.ok(submittedText.includes('call_031'));
+  assert.ok(submittedText.includes('"ok":false'));
+  assert.ok(submittedText.includes('[訊息過長無法送出]'));
+  assert.ok(submittedText.includes('fs_search'));
+  // Make sure the oversized 25000 chars are NOT in the submitted text
+  assert.ok(!submittedText.includes('x'.repeat(100)));
+});

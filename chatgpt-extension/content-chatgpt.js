@@ -73,8 +73,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
   if (message?.type === 'chatcmd-chatgpt-stop') {
-    if (!activeRequest || activeRequest.id !== message.requestId) { sendResponse({ ok: false, error: 'No running ChatGPT turn was found on this tab.' }); return false; }
-    activeRequest.stopRequested = true; clickStopButton(); sendResponse({ ok: true }); return false;
+    clickStopButton();
+    if (activeRequest) {
+      activeRequest.stopRequested = true;
+    }
+    sendResponse({ ok: true });
+    return false;
   }
   if (message?.type === 'chatcmd-chatgpt-ready') {
     const composer = findComposer();
@@ -153,8 +157,21 @@ async function runRequest(message) {
       conversationUrl = finalIdentity.conversationUrl;
     }
 
-    const currentResult = await executeToolLoop(owner, message.requestId, result);
+    let currentResult = await executeToolLoop(owner, message.requestId, result);
     if (requestObservationLost(owner)) return;
+    if (owner?.stopRequested && !globalThis.ChatCmdToolBridge?.hasPendingToolCalls(result)) {
+      try {
+        const composer = await waitForComposer();
+        if (composer) {
+          const stopMsg = '[用戶暫停操作] 使用者已按下暫停鍵，已暫停本次操作。請確認並停止後續動作。';
+          setComposerText(composer, stopMsg);
+          await submitPrompt(composer);
+          currentResult = await waitForAssistant(assistantNodes().length, message.requestId, stopMsg, currentResult);
+        }
+      } catch (e) {
+        console.warn('[ChatCMD] Error submitting stop notice for text turn', e);
+      }
+    }
     await reportRequestResult({
       requestId: message.requestId,
       status: activeRequest?.id === message.requestId && activeRequest.stopRequested ? 'stopped' : 'completed',
@@ -390,10 +407,21 @@ async function submitPrompt(composer) {
       error.isTooLong = true;
       throw error;
     }
-    const result = await waitFor(() => {
-      if (isSendBlockedByTooLong?.(composer) || findTooLongSubmissionError?.()) return 'TOO_LONG';
-      return (!button.disabled && button.getAttribute('aria-disabled') !== 'true') ? button : null;
-    }, 20_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
+    let result;
+    try {
+      result = await waitFor(() => {
+        if (isSendBlockedByTooLong?.(composer) || findTooLongSubmissionError?.()) return 'TOO_LONG';
+        return (!button.disabled && button.getAttribute('aria-disabled') !== 'true') ? button : null;
+      }, 10_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
+    } catch (e) {
+      const compText = (composer.value !== undefined ? composer.value : (composer.innerText || composer.textContent || '')).trim();
+      if (compText.length > 2000) {
+        const error = new Error('TOO_LONG_SUBMISSION');
+        error.isTooLong = true;
+        throw error;
+      }
+      throw e;
+    }
     if (result === 'TOO_LONG') {
       const error = new Error('TOO_LONG_SUBMISSION');
       error.isTooLong = true;
@@ -539,19 +567,52 @@ async function executeToolLoop(owner, requestId, initialResult) {
         }
       }
     };
-    const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(requestId, currentResult, bridgeSubmit);
-    // After dispatch, only verify the request slot is still ours — the new observer hasn't had
-    // time to find its user node yet, so checking observer.active here would be a false positive.
-    if (!dispatched || activeRequest !== owner) { globalThis.ChatCmdToolBridge?.reset?.(); if (_dbg()) console.log('[ChatCMD ToolLoop] exit:no-dispatch-or-lost', { turn: _turn, requestId, dispatched, activeChanged: activeRequest !== owner }); return currentResult; }
-    // NOTE: Do NOT call reset() here. executedCallIds must persist across all turns of the tool
-    // loop so that any call ID dispatched in an earlier turn can never be re-dispatched — even if
-    // ChatGPT echoes a previous tool-call block in its next answer.
-    // previousAnswer: the answer from the previous waitForAssistant call ('' on turn 1).
-    // The monitor uses this to reject a stale answer that matches the previously consumed text.
+
+    if (owner?.stopRequested || activeRequest !== owner) {
+      if (_dbg()) console.log('[ChatCMD ToolLoop] stopRequested before turn', { turn: _turn, requestId });
+      const calls = globalThis.ChatCmdToolBridge.parseToolCalls(currentResult);
+      if (calls.length > 0) {
+        const stopNotice = '[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。';
+        const blocks = calls.map((c) =>
+          `\`\`\`chatcmd_tool_result\n{"id":"${c.id}","tool":"${c.tool}","ok":false,"error":${JSON.stringify(stopNotice)}}\n\`\`\``
+        );
+        const reply = blocks.join('\n\n') + '\n\n[ChatCMD 提醒]\n使用者已按暫停操作，請勿繼續調用工具。';
+        try {
+          await bridgeSubmit(reply);
+          currentResult = await waitForAssistant(assistantCount, requestId, reply, previousAnswer);
+        } catch (e) {
+          console.warn('[ChatCMD ToolLoop] error submitting stop notice', e);
+        }
+      }
+      globalThis.ChatCmdToolBridge?.reset?.();
+      return currentResult;
+    }
+
+    const dispatched = await globalThis.ChatCmdToolBridge.runPendingCalls(
+      requestId,
+      currentResult,
+      bridgeSubmit,
+      () => Boolean(owner?.stopRequested || activeRequest !== owner)
+    );
+    if (!dispatched || activeRequest !== owner || owner?.stopRequested) {
+      globalThis.ChatCmdToolBridge?.reset?.();
+      if (_dbg()) console.log('[ChatCMD ToolLoop] exit:no-dispatch-or-stopped', { turn: _turn, requestId, dispatched, stopRequested: owner?.stopRequested });
+      if (owner?.stopRequested && submittedReply) {
+        try {
+          currentResult = await waitForAssistant(assistantCount, requestId, submittedReply, previousAnswer);
+        } catch {}
+      }
+      return currentResult;
+    }
+
     currentResult = await waitForAssistant(assistantCount, requestId, submittedReply, previousAnswer);
     previousAnswer = currentResult;  // update AFTER the call so the next turn sees this answer
     if (_dbg()) console.log('[ChatCMD ToolLoop] turn-end', { turn: _turn, requestId, newTextLen: currentResult.length, textTail: currentResult.slice(-120) });
-    if (requestObservationLost(owner)) { globalThis.ChatCmdToolBridge?.reset?.(); if (_dbg()) console.log('[ChatCMD ToolLoop] exit:observation-lost', { turn: _turn, requestId }); return currentResult; }
+    if (owner?.stopRequested || requestObservationLost(owner)) {
+      globalThis.ChatCmdToolBridge?.reset?.();
+      if (_dbg()) console.log('[ChatCMD ToolLoop] exit:observation-lost-or-stopped', { turn: _turn, requestId });
+      return currentResult;
+    }
   }
   if (_dbg()) console.log('[ChatCMD ToolLoop] done', { turn: _turn, requestId, finalTextLen: currentResult.length });
   globalThis.ChatCmdToolBridge?.reset?.(); return currentResult;
@@ -571,8 +632,21 @@ async function adoptObservedRequest(request, user = null) {
     await owner.observer?.bind();
     const result = await waitForAssistant(0, request.id, request.submittedContent);
     if (requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost before tool loop', { requestId: request.id }); return; }
-    const currentResult = await executeToolLoop(owner, request.id, result);
+    let currentResult = await executeToolLoop(owner, request.id, result);
     if (requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost after tool loop', { requestId: request.id }); return; }
+    if (owner?.stopRequested && !globalThis.ChatCmdToolBridge?.hasPendingToolCalls(result)) {
+      try {
+        const composer = await waitForComposer();
+        if (composer) {
+          const stopMsg = '[用戶暫停操作] 使用者已按下暫停鍵，已暫停本次操作。請確認並停止後續動作。';
+          setComposerText(composer, stopMsg);
+          await submitPrompt(composer);
+          currentResult = await waitForAssistant(assistantNodes().length, request.id, stopMsg, currentResult);
+        }
+      } catch (e) {
+        console.warn('[ChatCMD] Error submitting stop notice in adoptObservedRequest', e);
+      }
+    }
     const identity = currentConversationIdentity();
     await reportRequestResult({ requestId: request.id, status: owner.stopRequested ? 'stopped' : 'completed', conversationId: identity?.conversationId, conversationUrl: identity?.conversationUrl, assistantContent: currentResult });
   } catch (error) {

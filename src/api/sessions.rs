@@ -247,7 +247,7 @@ async fn session_detail(
     if let Some(row) = sqlx::query("SELECT 'mcp' AS kind,session_id AS id,task_id,NULL AS executable,NULL AS process_id,status,NULL AS working_directory,created_at_ms,updated_at_ms,NULL AS closed_at_ms FROM task_sessions WHERE session_id=?")
         .bind(id).fetch_optional(state.repository.pool()).await.map_err(db_problem)?
     {
-        let events = sqlx::query("SELECT event_id,turn_id,session_id,kind,payload_json,created_at_ms FROM timeline_events WHERE session_id=? ORDER BY created_at_ms,event_id LIMIT 1000")
+        let events = sqlx::query("SELECT event_id,task_id,turn_id,session_id,kind,payload_json,created_at_ms FROM timeline_events WHERE session_id=? ORDER BY created_at_ms,event_id LIMIT 1000")
             .bind(id).fetch_all(state.repository.pool()).await.map_err(db_problem)?;
         return Ok(Json(json!({
             "session": session_row(&row),

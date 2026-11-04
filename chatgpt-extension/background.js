@@ -320,10 +320,27 @@ async function reportSubagentFailure(subagentId, attempt, localBaseUrl, error) {
 
 async function stopRequest(message) {
   localOrigin(message.localBaseUrl);
-if (!message.requestId) throw new Error('Missing request ID to stop.');
+  if (!message.requestId) throw new Error('Missing request ID to stop.');
   const context = await requestContext(message.requestId);
-  if (!context?.tabId) throw new Error('Could not find the ChatGPT tab handling this request.');
-  await chrome.tabs.sendMessage(context.tabId, { type: 'chatcmd-chatgpt-stop', requestId: message.requestId });
+  let delivered = false;
+  if (context?.tabId) {
+    try {
+      await chrome.tabs.sendMessage(context.tabId, { type: 'chatcmd-chatgpt-stop', requestId: message.requestId });
+      delivered = true;
+    } catch { /* tab may have navigated */ }
+  }
+  if (!delivered) {
+    const tabs = await chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://gemini.google.com/*'] });
+    for (const tab of tabs) {
+      if (tab.id) {
+        try {
+          await chrome.tabs.sendMessage(tab.id, { type: 'chatcmd-chatgpt-stop', requestId: message.requestId });
+          delivered = true;
+        } catch { /* continue */ }
+      }
+    }
+  }
+  if (!delivered && !context?.tabId) throw new Error('Could not find the ChatGPT tab handling this request.');
 }
 
 async function reconcileRequest(requestId) {

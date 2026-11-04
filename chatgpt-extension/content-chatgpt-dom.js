@@ -149,6 +149,10 @@
       return false;
     }
     if (findTooLongSubmissionError()) return true;
+    if (comp) {
+      const text = (comp.value !== undefined ? comp.value : (comp.innerText || comp.textContent || '')).trim();
+      if (text.length > 8000) return true;
+    }
     if (button) {
       const btnText = (button.getAttribute('aria-label') || '') + ' ' + (button.title || '') + ' ' + (button.textContent || '');
       if (isTooLongText(btnText)) return true;

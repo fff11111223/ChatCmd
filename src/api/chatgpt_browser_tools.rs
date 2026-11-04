@@ -30,6 +30,19 @@ const MAX_AI_COMMAND_RESULT_BYTES: usize = 64 * 1024;
 
 fn guard_command_run_result_for_ai(tool: &str, value: Value) -> Value {
     if tool != "command_run" {
+        let serialized_len = serde_json::to_string(&value).map_or(0, |s| s.len());
+        if serialized_len > MAX_AI_COMMAND_RESULT_BYTES {
+            return json!({
+                "resultTooLarge": true,
+                "originalOutputBytes": serialized_len,
+                "maxAiResultBytes": MAX_AI_COMMAND_RESULT_BYTES,
+                "warning": format!(
+                    "The {tool} result was too large to return in full ({} bytes, limit {} bytes). Do not request the complete output. Specify smaller path scopes, more specific query/pattern filters, limit results, or read in chunks/ranges, then issue another tool call.",
+                    serialized_len,
+                    MAX_AI_COMMAND_RESULT_BYTES,
+                )
+            });
+        }
         return value;
     }
 
@@ -165,6 +178,18 @@ pub(super) async fn browser_tool_call(
     let row = super::chatgpt_support::bridge_request_row(&state, request_id).await?;
 
     let status: String = row.get("status");
+    if matches!(status.as_str(), "stop_requested" | "stopped") {
+        return Ok(Json(json!({
+            "ok": false,
+            "stopped": true,
+            "callId": call_id,
+            "requestId": request_id,
+            "tool": tool,
+            "error": {
+                "message": "[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。"
+            }
+        })));
+    }
     if !matches!(status.as_str(), "queued" | "running") {
         return Err(Problem::new(
             StatusCode::CONFLICT,

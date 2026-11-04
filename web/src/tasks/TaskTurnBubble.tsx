@@ -545,11 +545,20 @@ function ResendToolResultModal({ activity, rawCallJson, taskId, close }: { activ
     try {
       const callId = activity.id || 'call_manual';
       const toolName = activity.tool || 'tool';
+      let payloadContent = output;
+      let forceError = false;
+      if (isOk) {
+        const str = typeof output === 'string' ? output : JSON.stringify(output);
+        if (str.length > 12000) {
+          payloadContent = tr('[Message too long] Tool output is too long ({count} chars) to send through browser. Please narrow down the query scope or read in pages.', { count: str.length });
+          forceError = true;
+        }
+      }
       const resultBlock = sendMode === 'call'
         ? `\`\`\`chatcmd_tool_call\n${callJson}\n\`\`\``
-        : isOk
-          ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(output)}}\n\`\`\``
-          : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(output)}}\n\`\`\``;
+        : isOk && !forceError
+          ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(payloadContent)}}\n\`\`\``
+          : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(payloadContent)}}\n\`\`\``;
 
       const bridge = await api.chatGptBridge(taskId);
       const conversationUrl = bridge.conversationUrl || undefined;

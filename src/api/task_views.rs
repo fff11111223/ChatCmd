@@ -190,7 +190,11 @@ pub(crate) async fn task_activity(
         .await
         .map_err(db_problem)?;
     if rows.is_empty() {
-        rows = sqlx::query("SELECT event_id,kind,payload_json FROM timeline_events WHERE kind IN ('tool_call','tool_result') AND (event_id=? OR json_extract(payload_json,'$.activityId')=?) ORDER BY created_at_ms ASC,event_id ASC")
+        // If not found directly under the requested task ID, check if this task is a parent of a subagent
+        // that executed this activity. This is strictly scoped within the task hierarchy and prevents
+        // any cross-task or cross-project data leakage.
+        rows = sqlx::query("SELECT event_id,kind,payload_json FROM timeline_events WHERE task_id IN (SELECT child_task_id FROM subagent_runs WHERE parent_task_id=?) AND kind IN ('tool_call','tool_result') AND (event_id=? OR json_extract(payload_json,'$.activityId')=?) ORDER BY created_at_ms ASC,event_id ASC")
+            .bind(&id)
             .bind(&activity_id)
             .bind(&activity_id)
             .fetch_all(state.repository.pool())
@@ -254,9 +258,11 @@ pub(crate) async fn task_activity(
     }
     if let Some(artifact_id) = external_artifact_ref.as_deref() {
         let row = sqlx::query(
-            "SELECT artifact_registry.relative_path,tasks.agent_id FROM artifact_registry JOIN tasks ON tasks.id=artifact_registry.task_id WHERE artifact_registry.id=? LIMIT 1",
+            "SELECT artifact_registry.relative_path,tasks.agent_id FROM artifact_registry JOIN tasks ON tasks.id=artifact_registry.task_id WHERE artifact_registry.id=? AND (artifact_registry.task_id=? OR artifact_registry.task_id IN (SELECT child_task_id FROM subagent_runs WHERE parent_task_id=?)) LIMIT 1",
         )
         .bind(artifact_id)
+        .bind(&id)
+        .bind(&id)
         .fetch_optional(state.repository.pool())
         .await
         .map_err(db_problem)?;
@@ -546,6 +552,7 @@ async fn task_detail_page(
         let text = String::from_utf8_lossy(&row.get::<Vec<u8>, _>("payload")).into_owned();
         (timestamp, event_id.clone(), json!({
             "id": event_id,
+            "taskId": id,
             "type": row.get::<String, _>("kind"),
             "occurredAt": iso_ms(timestamp),
             "turnId": row.get::<Option<String>, _>("turn_id"),
@@ -595,7 +602,7 @@ async fn fetch_timeline_rows(
         return Ok(Vec::new());
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT event_id,turn_id,session_id,kind,CASE WHEN payload_size_bytes>131072 AND kind IN ('tool_call','tool_result') THEN json_object('activityId',json_extract(payload_json,'$.activityId'),'tool',json_extract(payload_json,'$.tool'),'status',json_extract(payload_json,'$.status'),'schemaVersion',schema_version,'legacyPayloadOmitted',1,'originalPayloadBytes',payload_size_bytes,'artifactRef',artifact_id) ELSE payload_json END AS payload_json,created_at_ms FROM timeline_events WHERE task_id=",
+        "SELECT event_id,task_id,turn_id,session_id,kind,CASE WHEN payload_size_bytes>131072 AND kind IN ('tool_call','tool_result') THEN json_object('activityId',json_extract(payload_json,'$.activityId'),'tool',json_extract(payload_json,'$.tool'),'status',json_extract(payload_json,'$.status'),'schemaVersion',schema_version,'legacyPayloadOmitted',1,'originalPayloadBytes',payload_size_bytes,'artifactRef',artifact_id) ELSE payload_json END AS payload_json,created_at_ms FROM timeline_events WHERE task_id=",
     );
     query.push_bind(task_id).push(" AND turn_id IN (");
     let mut separated = query.separated(",");
@@ -685,7 +692,15 @@ pub(super) fn timeline_row(row: &sqlx::sqlite::SqliteRow) -> Value {
     let payload =
         serde_json::from_str::<Value>(&row.get::<String, _>("payload_json")).unwrap_or(Value::Null);
     let payload = compact_tool_payload(&kind, payload);
-    json!({"id":row.get::<String,_>("event_id"),"type":kind,"occurredAt":iso_ms(row.get("created_at_ms")),"turnId":row.get::<Option<String>,_>("turn_id"),"sessionId":row.get::<Option<String>,_>("session_id"),"payload":payload})
+    json!({
+        "id": row.get::<String, _>("event_id"),
+        "taskId": row.try_get::<String, _>("task_id").ok(),
+        "type": kind,
+        "occurredAt": iso_ms(row.get("created_at_ms")),
+        "turnId": row.get::<Option<String>, _>("turn_id"),
+        "sessionId": row.get::<Option<String>, _>("session_id"),
+        "payload": payload
+    })
 }
 
 fn compact_tool_payload(kind: &str, payload: Value) -> Value {

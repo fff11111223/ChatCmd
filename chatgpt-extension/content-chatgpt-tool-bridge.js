@@ -269,6 +269,9 @@
 
   // ── Formatting ─────────────────────────────────────────────────────────
 
+  const MAX_SAFE_TOOL_CONTENT_CHARS = 12000;
+  const MAX_SAFE_REPLY_CHARS = 16000;
+
   /**
    * Build the tool-result block that will be injected into the ChatGPT
    * composer so ChatGPT can read the result and continue its task.
@@ -284,6 +287,10 @@
       const content = typeof result === 'string'
         ? result
         : JSON.stringify(result, null, 2);
+      if (content.length > MAX_SAFE_TOOL_CONTENT_CHARS) {
+        const msg = `[訊息過長無法送出] 工具 ${toolName} 執行結果過長（共 ${content.length} 字元，超出發送上限）。請改用較小範圍、較短輸出或分頁讀取（例如指定子目錄 path、增加具體 pattern/query 關鍵字、使用 limit 等），不要一次輸出大量內容。`;
+        return `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(msg)}}\n\`\`\``;
+      }
       return `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(content)}}\n\`\`\``;
     }
     // Normalise errorInfo into a human-readable message.
@@ -330,7 +337,7 @@
    *
    * Returns true if at least one tool call was dispatched.
    */
-  async function runPendingCalls(requestId, text, submitFn) {
+  async function runPendingCalls(requestId, text, submitFn, isStopped = null) {
     const allParsed = parseToolCalls(text);
     const calls = allParsed.filter((c) => {
       if (executedCallIds.has(c.id)) {
@@ -350,6 +357,17 @@
       return false;
     }
 
+    if (typeof isStopped === 'function' && isStopped()) {
+      for (const c of calls) executedCallIds.add(c.id);
+      const stopNotice = '[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。';
+      const blocks = calls.map((c) =>
+        `\`\`\`chatcmd_tool_result\n{"id":"${c.id}","tool":"${c.tool}","ok":false,"error":${JSON.stringify(stopNotice)}}\n\`\`\``
+      );
+      const reply = blocks.join('\n\n') + '\n\n[ChatCMD 提醒]\n使用者已按暫停操作，請勿繼續調用工具。';
+      await submitFn(reply);
+      return false;
+    }
+
     // Mark all as dispatched immediately (first-layer dedupe).
     if (_dbg()) console.log('[ChatCMD ToolBridge] runPendingCalls: dispatching', { requestId, callIds: calls.map((c) => `${c.id}(${c.tool})`), allParsedIds: allParsed.map((c) => c.id) });
     for (const c of calls) {
@@ -359,6 +377,9 @@
     // Execute all calls in parallel.
     const results = await Promise.allSettled(
       calls.map(async (call) => {
+        if (typeof isStopped === 'function' && isStopped()) {
+          return { ok: false, stopped: true, callId: call.id, tool: call.tool, error: { message: '[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。' } };
+        }
         if (inflight.has(call.id)) return inflight.get(call.id);
         const promise = executeToolCall(requestId, call);
         inflight.set(call.id, promise);
@@ -370,6 +391,11 @@
       })
     );
 
+    const userStopped = Boolean(
+      (typeof isStopped === 'function' && isStopped()) ||
+      results.some((r) => r.status === 'fulfilled' && (r.value?.stopped || String(r.value?.error?.message || '').includes('用戶暫停操作')))
+    );
+
     // Build the combined result block.
     const blocks = [];
     let anyError = false;
@@ -379,7 +405,12 @@
     for (let i = 0; i < calls.length; i++) {
       const call = calls[i];
       const outcome = results[i];
-      if (outcome.status === 'fulfilled') {
+      if (userStopped) {
+        const stopNotice = '[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。';
+        blocks.push(`\`\`\`chatcmd_tool_result\n{"id":"${call.id}","tool":"${call.tool}","ok":false,"error":${JSON.stringify(stopNotice)}}\n\`\`\``);
+        anyError = true;
+        errorTools.push(call.tool);
+      } else if (outcome.status === 'fulfilled') {
         const r = outcome.value;
         blocks.push(formatResult(call.id, call.tool, r?.ok === true, r?.result, r?.error));
         if (r?.ok !== true) {
@@ -395,6 +426,12 @@
         anyError = true;
         errorTools.push(call.tool);
       }
+    }
+
+    if (userStopped) {
+      const reply = blocks.join('\n\n') + '\n\n[ChatCMD 提醒]\n使用者已按暫停操作，請勿繼續調用工具。';
+      await submitFn(reply);
+      return false;
     }
 
     // Compute next_id only from parsed call envelopes. IDs inside tool results,
@@ -436,6 +473,14 @@
 
     if (footerLines.length > 0) {
       reply += '\n\n[ChatCMD 提醒]\n' + footerLines.join('\n');
+    }
+
+    if (reply.length > MAX_SAFE_REPLY_CHARS) {
+      const prompt = `[訊息過長無法送出] 本回合工具執行結果總長度過長（共 ${reply.length} 字元，超出發送上限）。請改用較小範圍、較短輸出或分頁讀取，只取得回答目前問題所需的資訊，再繼續；不要一次要求過多或過大的工具輸出。`;
+      reply = `\`\`\`chatcmd_tool_result\n{"id":"${calls[0]?.id || 'call_001'}","tool":"${calls[0]?.tool || 'tool'}","ok":false,"error":${JSON.stringify(prompt)}}\n\`\`\``;
+      if (nextId) {
+        reply += `\n\n[ChatCMD 提醒]\nnext_id: ${nextId}`;
+      }
     }
 
     await submitFn(reply);

@@ -418,6 +418,11 @@ pub(super) async fn stop_conversation(
         .execute(state.repository.pool())
         .await
         .map_err(db_problem)?;
+    let _ = sqlx::query("UPDATE chatgpt_bridge_requests SET status='stop_requested',updated_at_ms=? WHERE task_id=? AND status IN ('queued','running')")
+        .bind(now)
+        .bind(id)
+        .execute(state.repository.pool())
+        .await;
     interrupt_active_child_subagents(state, id).await?;
     mark_child_subagent_terminal(state, id, "stopped").await?;
     sqlx::query("UPDATE approvals SET state='cancelled',decision_json='{}',resolved_at_ms=? WHERE task_id=? AND state='pending'")

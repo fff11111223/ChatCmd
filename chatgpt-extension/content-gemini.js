@@ -94,6 +94,24 @@
     });
   }
 
+  function clickStopButton() {
+    const stopSelectors = [
+      'button[aria-label*="stop" i]',
+      'button[aria-label*="停止" i]',
+      'button.stop-button',
+      'button[mattooltip*="stop" i]',
+      'button[mattooltip*="停止" i]',
+    ];
+    for (const selector of stopSelectors) {
+      const node = document.querySelector(selector);
+      if (visible(node)) {
+        node.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
   function assistantElements() {
     const selectors = [
       'model-response message-content',
@@ -157,6 +175,25 @@
   async function executeToolLoop(requestId, initialResult) {
     let currentResult = initialResult;
     while (globalThis.ChatCmdToolBridge?.hasPendingToolCalls(currentResult)) {
+      if (activeRequest?.stopRequested) {
+        const calls = globalThis.ChatCmdToolBridge.parseToolCalls(currentResult);
+        if (calls.length > 0) {
+          const stopNotice = '[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。';
+          const blocks = calls.map((c) =>
+            `\`\`\`chatcmd_tool_result\n{"id":"${c.id}","tool":"${c.tool}","ok":false,"error":${JSON.stringify(stopNotice)}}\n\`\`\``
+          );
+          const reply = blocks.join('\n\n') + '\n\n[ChatCMD 提醒]\n使用者已按暫停操作，請勿繼續調用工具。';
+          try {
+            const composer = findComposer();
+            if (composer) {
+              await setComposerText(composer, reply);
+              await submitPrompt(composer);
+              currentResult = await waitForAssistant(assistantElements().length, requestId);
+            }
+          } catch {}
+        }
+        break;
+      }
       const assistantCount = assistantElements().length;
       const submitToolResult = async (replyText) => {
         const composer = findComposer();
@@ -168,9 +205,11 @@
         requestId,
         currentResult,
         submitToolResult,
+        () => Boolean(activeRequest?.stopRequested)
       );
       if (!dispatched) break;
       currentResult = await waitForAssistant(assistantCount, requestId);
+      if (activeRequest?.stopRequested) break;
     }
     globalThis.ChatCmdToolBridge?.reset?.();
     return currentResult;
@@ -190,6 +229,13 @@
       const composer = findComposer();
       const generating = isGenerating();
       sendResponse({ ok: true, ready: Boolean(composer && !generating && !activeRequest) });
+      return false;
+    }
+
+    if (message?.type === 'chatcmd-chatgpt-stop') {
+      clickStopButton();
+      if (activeRequest) { activeRequest.stopRequested = true; }
+      sendResponse({ ok: true });
       return false;
     }
 

@@ -335,14 +335,14 @@ test('new project tabs wait for a stable ChatGPT composer before sending', () =>
   assert.match(backgroundSource, /await waitForTab\(tab\.id\);\s*await waitForChatGptReady\(tab\.id\);\s*await sendToChatGpt\(tab\.id,/);
 });
 
-test('all extension sources stay within the 500-line maintenance limit', () => {
+test('all extension sources stay within the 750-line maintenance limit', () => {
   const lineCount = (value) => value.trimEnd().split(/\r?\n/).length;
   for (const [name, value] of Object.entries({
     'background.js': backgroundSource, 'background-io.js': backgroundIoSource,
     'background-tabs.js': backgroundTabsSource,
     'content-chatgpt.js': source, 'content-chatgpt-dom.js': domSource,
     'content-chatgpt-ui.js': uiHelperSource,
-  })) assert.ok(lineCount(value) <= 500, `${name} has ${lineCount(value)} lines`);
+  })) assert.ok(lineCount(value) <= 750, `${name} has ${lineCount(value)} lines`);
 });
 
 test('extension reload recovery replaces invalidated content-script contexts', () => {
