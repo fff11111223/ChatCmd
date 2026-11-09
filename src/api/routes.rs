@@ -81,6 +81,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/chatgpt/tasks/{task_id}", get(task_bridge))
         .route("/chatgpt/tasks/{task_id}/messages", post(continue_message))
         .route("/chatgpt/tasks/{task_id}/stop", post(stop_message))
+        .route("/chatgpt/tasks/{task_id}/sync", post(task_sync))
         .route(
             "/chatgpt/tasks/{task_id}/queue",
             get(queue_messages).post(create_queue_message),

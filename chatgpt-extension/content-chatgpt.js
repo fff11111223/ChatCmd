@@ -80,6 +80,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message?.type === 'chatcmd-force-extract-latest') {
+    const assistantContent = latestMessageText('assistant');
+    const identity = currentConversationIdentity();
+    sendResponse({
+      ok: true,
+      provider: 'chatgpt',
+      conversationId: identity?.conversationId || '',
+      conversationUrl: identity?.conversationUrl || window.location.href,
+      assistantContent: assistantContent || '',
+    });
+    return false;
+  }
   if (message?.type === 'chatcmd-chatgpt-ready') {
     const composer = findComposer();
     const generating = Boolean(findStopButton());
@@ -158,8 +170,8 @@ async function runRequest(message) {
     }
 
     let currentResult = await executeToolLoop(owner, message.requestId, result);
-    if (requestObservationLost(owner)) return;
-    if (owner?.stopRequested && !globalThis.ChatCmdToolBridge?.hasPendingToolCalls(result)) {
+    if (!owner?.stopRequested && requestObservationLost(owner)) return;
+    if (owner?.stopRequested && !owner?.stopNoticeSubmitted && !globalThis.ChatCmdToolBridge?.hasPendingToolCalls(result)) {
       try {
         const composer = await waitForComposer();
         if (composer) {
@@ -223,7 +235,9 @@ async function reconcileActiveRequest(requestId) {
 }
 
 async function reportRequestResult(payload) {
-  if (activeRequest?.id !== payload.requestId || requestObservationLost(activeRequest)) return;
+  if (activeRequest?.id !== payload.requestId) return;
+  const stopped = activeRequest?.stopRequested;
+  if (!stopped && requestObservationLost(activeRequest)) return;
   if (activeRequest?.id === payload.requestId) {
     if (activeRequest.resultReported) return;
     await activeRequest.observer?.flush(payload.status === 'completed');
@@ -542,6 +556,9 @@ async function executeToolLoop(owner, requestId, initialResult) {
     const bridgeSubmit = async (replyText) => {
       const composer = await waitForComposer();
       submittedReply = replyText;
+      if (owner?.stopRequested) {
+        owner.stopNoticeSubmitted = true;
+      }
       if (owner) {
         owner.observer?.finish?.();
         owner.observer = globalThis.ChatCmdObserver?.create(requestId, replyText, {
@@ -571,7 +588,8 @@ async function executeToolLoop(owner, requestId, initialResult) {
     if (owner?.stopRequested || activeRequest !== owner) {
       if (_dbg()) console.log('[ChatCMD ToolLoop] stopRequested before turn', { turn: _turn, requestId });
       const calls = globalThis.ChatCmdToolBridge.parseToolCalls(currentResult);
-      if (calls.length > 0) {
+      if (calls.length > 0 && !owner?.stopNoticeSubmitted) {
+        owner.stopNoticeSubmitted = true;
         const stopNotice = '[用戶暫停操作] 使用者已按下暫停鍵，已中止工具執行。請停止後續操作並向使用者確認。';
         const blocks = calls.map((c) =>
           `\`\`\`chatcmd_tool_result\n{"id":"${c.id}","tool":"${c.tool}","ok":false,"error":${JSON.stringify(stopNotice)}}\n\`\`\``
@@ -633,8 +651,8 @@ async function adoptObservedRequest(request, user = null) {
     const result = await waitForAssistant(0, request.id, request.submittedContent);
     if (requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost before tool loop', { requestId: request.id }); return; }
     let currentResult = await executeToolLoop(owner, request.id, result);
-    if (requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost after tool loop', { requestId: request.id }); return; }
-    if (owner?.stopRequested && !globalThis.ChatCmdToolBridge?.hasPendingToolCalls(result)) {
+    if (!owner?.stopRequested && requestObservationLost(owner)) { console.log('[ChatCMD] adoptObservedRequest: observation lost after tool loop', { requestId: request.id }); return; }
+    if (owner?.stopRequested && !owner?.stopNoticeSubmitted && !globalThis.ChatCmdToolBridge?.hasPendingToolCalls(result)) {
       try {
         const composer = await waitForComposer();
         if (composer) {

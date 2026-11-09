@@ -108,6 +108,7 @@ export const api = {
   chatGptBridge: (taskId: string) => request<ChatGptBridge>(`/api/local/chatgpt/tasks/${item(taskId)}`),
   sendChatGptMessage: (taskId: string, input: { model?: string; content: string }) => request<ChatGptRequest>(`/api/local/chatgpt/tasks/${item(taskId)}/messages`, { method: 'POST', body: json(input) }),
   stopChatGptMessage: (taskId: string) => request<ChatGptRequest>(`/api/local/chatgpt/tasks/${item(taskId)}/stop`, { method: 'POST', body: '{}' }),
+  syncChatGptTask: (taskId: string, input: { assistantContent: string; conversationId?: string; conversationUrl?: string }) => request<{ ok: boolean; synced: boolean }>(`/api/local/chatgpt/tasks/${item(taskId)}/sync`, { method: 'POST', body: json(input) }),
   chatGptQueue: (taskId: string) => request<ChatGptQueuedMessage[]>(`/api/local/chatgpt/tasks/${item(taskId)}/queue`),
   createChatGptQueuedMessage: (taskId: string, input: { content: string; mode: 'queued' | 'immediate' }) => request<ChatGptQueuedMessage>(`/api/local/chatgpt/tasks/${item(taskId)}/queue`, { method: 'POST', body: json(input) }),
   updateChatGptQueuedMessage: (taskId: string, messageId: string, input: { content?: string; mode?: 'queued' | 'immediate' }) => request<ChatGptQueuedMessage>(`/api/local/chatgpt/tasks/${item(taskId)}/queue/${item(messageId)}`, { method: 'PATCH', body: json(input) }),

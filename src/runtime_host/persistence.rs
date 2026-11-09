@@ -100,7 +100,9 @@ impl RuntimeHost {
             tokio::select! {
             result = &mut dispatch => break result,
             () = context.cancellation.cancelled() => break {
-                let reason = self.activities.stop_reason(&context.request_id);
+                let reason = self
+                    .activities
+                    .stop_reason(context.task_id.as_deref(), &context.request_id);
                 // Dropping a dispatch future does not stop an active blocking worker. Continue
                 // polling until it reaches a cooperative checkpoint and completes cleanup. If
                 // it committed before observing cancellation, preserve the committed result.
@@ -177,7 +179,7 @@ impl RuntimeHost {
         let key = safe_id(
             "mcp-event",
             &context.agent_id,
-            &format!("{}\0{status}", context.request_id),
+            &format!("{}\0{}\0{}\0{status}", task_id.as_str(), turn_id.as_str(), context.request_id),
         );
         let limits = EventLimits::default();
         let mut received_bytes = 0_u64;
@@ -567,7 +569,7 @@ impl RuntimeHost {
         let key = safe_id(
             "agent-event",
             &context.agent_id,
-            &format!("{}\0{status}", context.request_id),
+            &format!("{}\0{}\0{}\0{status}", task_id.as_str(), turn_id.as_str(), context.request_id),
         );
         let event_kind = if status == "completed" {
             EventKind::Status

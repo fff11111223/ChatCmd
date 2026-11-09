@@ -25,7 +25,7 @@ pub(crate) struct ActiveActivity {
 
 pub(crate) struct ActivityGuard {
     registry: ActivityRegistry,
-    activity_id: String,
+    key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +93,7 @@ impl ActivityRegistry {
             return None;
         }
         let activity_id = context.request_id.clone();
+        let key = scoped_activity_key(context.task_id.as_deref(), &activity_id);
         let allow_user_input = tool == "shell_wait"
             && arguments.get("allowUserInput").and_then(Value::as_bool) == Some(true);
         let activity = ActiveActivity {
@@ -109,10 +110,10 @@ impl ActivityRegistry {
         self.active
             .lock()
             .ok()?
-            .insert(activity_id.clone(), activity);
+            .insert(key.clone(), activity);
         Some(ActivityGuard {
             registry: self.clone(),
-            activity_id,
+            key,
         })
     }
 
@@ -126,7 +127,13 @@ impl ActivityRegistry {
         let Ok(active) = self.active.lock() else {
             return (StopActivityResult::NotRunning, None);
         };
-        let Some(activity) = active.get(activity_id).cloned() else {
+        let key = scoped_activity_key(Some(task_id), activity_id);
+        let Some(activity) = active.get(&key).cloned().or_else(|| {
+            active.get(&scoped_activity_key(None, activity_id)).cloned()
+        }) else {
+            if active.values().any(|a| a.context.request_id == activity_id) {
+                return (StopActivityResult::OwnershipMismatch, None);
+            }
             return (StopActivityResult::NotRunning, None);
         };
         if activity.context.task_id.as_deref() != Some(task_id)
@@ -143,9 +150,18 @@ impl ActivityRegistry {
         (StopActivityResult::Stopped, Some(activity))
     }
 
-    pub(crate) fn stop_reason(&self, activity_id: &str) -> Option<String> {
+    pub(crate) fn stop_reason(&self, task_id: Option<&str>, activity_id: &str) -> Option<String> {
         let active = self.active.lock().ok()?;
-        active.get(activity_id)?.stop_reason.lock().ok()?.clone()
+        let key = scoped_activity_key(task_id, activity_id);
+        if let Some(activity) = active.get(&key) {
+            return activity.stop_reason.lock().ok()?.clone();
+        }
+        active
+            .get(&scoped_activity_key(None, activity_id))?
+            .stop_reason
+            .lock()
+            .ok()?
+            .clone()
     }
 
     pub(crate) fn is_shell_busy(&self, session_id: &str) -> bool {
@@ -220,17 +236,21 @@ impl ActivityRegistry {
         }
     }
 
-    fn remove(&self, activity_id: &str) {
+    fn remove(&self, key: &str) {
         if let Ok(mut active) = self.active.lock() {
-            active.remove(activity_id);
+            active.remove(key);
         }
     }
 }
 
 impl Drop for ActivityGuard {
     fn drop(&mut self) {
-        self.registry.remove(&self.activity_id);
+        self.registry.remove(&self.key);
     }
+}
+
+fn scoped_activity_key(task_id: Option<&str>, activity_id: &str) -> String {
+    format!("{}\0{}", task_id.unwrap_or(""), activity_id)
 }
 
 fn is_stoppable_tool(tool: &str) -> bool {
@@ -280,11 +300,60 @@ mod tests {
         );
         assert!(!context.cancellation.is_cancelled());
         assert_eq!(
-            registry.stop_reason("activity-1").as_deref(),
+            registry.stop_reason(Some("task-1"), "activity-1").as_deref(),
             Some("user requested stop")
         );
         context.cancellation.cancel();
         assert!(context.cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn concurrent_tasks_with_same_activity_id_do_not_collide() {
+        let registry = ActivityRegistry::default();
+        let mut context_a = OperationContext::new("call_145", "agent", "git_status");
+        context_a.task_id = Some("task-A".to_owned());
+        context_a.turn_id = Some("turn-1".to_owned());
+
+        let mut context_b = OperationContext::new("call_145", "agent", "git_status");
+        context_b.task_id = Some("task-B".to_owned());
+        context_b.turn_id = Some("turn-1".to_owned());
+
+        let guard_a = registry
+            .register(&context_a, "git_status", &serde_json::json!({"cwd":"."}))
+            .unwrap();
+        let guard_b = registry
+            .register(&context_b, "git_status", &serde_json::json!({"cwd":"."}))
+            .unwrap();
+
+        // Stopping task-A must only affect task-A
+        assert_eq!(
+            registry
+                .prepare_stop("task-A", "call_145", Some("turn-1"), Some("stop A"))
+                .0,
+            StopActivityResult::Stopped
+        );
+        assert_eq!(
+            registry.stop_reason(Some("task-A"), "call_145").as_deref(),
+            Some("stop A")
+        );
+        assert_eq!(
+            registry.stop_reason(Some("task-B"), "call_145"),
+            None
+        );
+
+        drop(guard_a);
+        // Dropping guard_a must not remove guard_b
+        assert_eq!(
+            registry
+                .prepare_stop("task-B", "call_145", Some("turn-1"), Some("stop B"))
+                .0,
+            StopActivityResult::Stopped
+        );
+        assert_eq!(
+            registry.stop_reason(Some("task-B"), "call_145").as_deref(),
+            Some("stop B")
+        );
+        drop(guard_b);
     }
 
     #[tokio::test]

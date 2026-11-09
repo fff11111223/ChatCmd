@@ -301,7 +301,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
       <div className="task-rail-toolbar">
         <button className="task-rail-collapse" type="button" aria-label={tr('Close conversation rail')} title={tr('Close conversation rail')} onClick={onDesktopCollapse}><PanelLeftClose /></button>
         <label className="tasks-conversation-search"><Search /><span className="sr-only">{tr('Search conversations')}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr('Search')} /></label>
-        <button className="task-rail-reload-tabs" type="button" aria-label={tr('Reload browser pages')} title={tr('Reload browser pages (ChatGPT / Gemini)')} onClick={() => void reloadTabs()} disabled={reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}</button>
+        <button className="task-rail-reload-tabs" type="button" aria-label={tr('Refresh conversations')} title={tr('Refresh conversations')} onClick={() => void reloadTabs()} disabled={reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}</button>
         <Link className="task-rail-new-message" to="/tasks/new" state={{ agentOrder: 'recent' }} aria-label={tr('New message')} title={tr('New message')}><Plus /></Link>
       </div>
       <div className="task-projects-title"><strong>{tr('Projects')}</strong><button type="button" onClick={() => openProjectModal()} aria-label={tr('Add project')} title={tr('Add project')}><Plus /></button></div>

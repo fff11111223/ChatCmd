@@ -131,8 +131,13 @@ globalThis.ChatCmdMonitor = Object.freeze({ create(api) {
     }
 
     if (api.activeRequest?.id === requestId && api.activeRequest.stopRequested) {
-      clickStopButton();
-      if (!findStopButton() && (lastRequestState.stopRequested || api.isTerminalRequestState(lastRequestState))) return text;
+      if (!api.activeRequest?.stopNoticeSubmitted) {
+        clickStopButton();
+      }
+      const hasNewText = (effectiveRecorder ? effectiveRecorder.hasTurn : nodes.length > baselineCount) && Boolean(text);
+      if (!findStopButton() && (lastRequestState.stopRequested || api.isTerminalRequestState(lastRequestState))) {
+        if (hasNewText || Date.now() - startedAt > 15_000) return text;
+      }
     }
 
     if (stopButton) {

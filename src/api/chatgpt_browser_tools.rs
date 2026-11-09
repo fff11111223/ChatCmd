@@ -242,7 +242,7 @@ pub(super) async fn browser_tool_call(
     //    call_id, return it immediately without re-executing.
     let existing_result: Option<String> = sqlx::query_scalar(
         "SELECT payload_json FROM timeline_events \
-         WHERE task_id=? AND turn_id=? AND actor='assistant' AND kind='tool_result' \
+         WHERE task_id=? AND turn_id=? AND kind='tool_result' \
          AND json_extract(payload_json,'$.activityId')=? LIMIT 1",
     )
     .bind(&task_id)

@@ -399,7 +399,82 @@ async fn plan13_content_ref_timeline_growth_stays_near_summary_size() {
         assert!(stored.len() < 16 * 1024);
         assert!(realtime_bytes < 16 * 1024);
     }
+
 }
+
+#[tokio::test]
+    async fn append_call_event_distinguishes_same_call_id_across_tasks() {
+        let (host, agent_id, _dir) = test_host().await;
+
+        let accepted_a = host
+            .call_persisted(
+                "agent_user_message",
+                turn_context("req-a", &agent_id, "agent_user_message", "turn-1", "scope-A"),
+                json!({"content":"Task A message"}),
+            )
+            .await
+            .expect("create task A");
+        let task_id_a = accepted_a["taskId"].as_str().expect("task A id").to_owned();
+        let turn_id_a = accepted_a["turnId"].as_str().expect("turn A id").to_owned();
+        let session_id_a = accepted_a["sessionId"].as_str().expect("session A id").to_owned();
+
+        let accepted_b = host
+            .call_persisted(
+                "agent_user_message",
+                turn_context("req-b", &agent_id, "agent_user_message", "turn-2", "scope-B"),
+                json!({"content":"Task B message"}),
+            )
+            .await
+            .expect("create task B");
+        let task_id_b = accepted_b["taskId"].as_str().expect("task B id").to_owned();
+        let turn_id_b = accepted_b["turnId"].as_str().expect("turn B id").to_owned();
+        let session_id_b = accepted_b["sessionId"].as_str().expect("session B id").to_owned();
+
+        let mut context_a = OperationContext::new("call_145", &agent_id, "command_run");
+        context_a.task_id = Some(task_id_a.clone());
+        context_a.turn_id = Some(turn_id_a.clone());
+        context_a.mcp_session_id = Some(session_id_a);
+
+        let mut context_b = OperationContext::new("call_145", &agent_id, "command_run");
+        context_b.task_id = Some(task_id_b.clone());
+        context_b.turn_id = Some(turn_id_b.clone());
+        context_b.mcp_session_id = Some(session_id_b);
+
+        // Both tasks append a "started" call event for the same call_id
+        host.append_call_event(&context_a, "command_run", "started", Some(&json!({"command":"echo A"})), None, None)
+            .await
+            .expect("persist task A started");
+        host.append_call_event(&context_b, "command_run", "started", Some(&json!({"command":"echo B"})), None, None)
+            .await
+            .expect("persist task B started");
+
+        // Both tasks append a "completed" call event for the same call_id
+        host.append_call_event(&context_a, "command_run", "completed", None, Some(&json!({"output":"A"})), None)
+            .await
+            .expect("persist task A completed");
+        host.append_call_event(&context_b, "command_run", "completed", None, Some(&json!({"output":"B"})), None)
+            .await
+            .expect("persist task B completed");
+
+        let count_a: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM timeline_events WHERE task_id=? AND json_extract(payload_json,'$.activityId')='call_145'",
+        )
+        .bind(&task_id_a)
+        .fetch_one(host.repository.pool())
+        .await
+        .expect("count task A events");
+
+        let count_b: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM timeline_events WHERE task_id=? AND json_extract(payload_json,'$.activityId')='call_145'",
+        )
+        .bind(&task_id_b)
+        .fetch_one(host.repository.pool())
+        .await
+        .expect("count task B events");
+
+        assert_eq!(count_a, 2, "Task A should have both started and completed events");
+        assert_eq!(count_b, 2, "Task B should have both started and completed events without collision");
+    }
 
 #[path = "user_message_lifecycle_tests.rs"]
 mod lifecycle_tests;

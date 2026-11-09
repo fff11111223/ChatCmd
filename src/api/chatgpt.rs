@@ -439,3 +439,69 @@ pub(super) async fn bridge_identity(
     transaction.commit().await.map_err(db_problem)?;
     request_json(&state, request_id).await
 }
+
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TaskSyncInput {
+    pub assistant_content: String,
+    pub conversation_id: Option<String>,
+    pub conversation_url: Option<String>,
+}
+
+pub(super) async fn task_sync(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(input): Json<TaskSyncInput>,
+) -> Result<Json<Value>, Problem> {
+    let task_id = task_id.trim();
+    if input.assistant_content.trim().is_empty() {
+        return Ok(Json(json!({ "ok": true, "synced": false, "reason": "empty_content" })));
+    }
+
+    let row = sqlx::query(
+        "SELECT id, conversation_id, conversation_url FROM chatgpt_bridge_requests WHERE task_id=? ORDER BY updated_at_ms DESC, id DESC LIMIT 1",
+    )
+    .bind(task_id)
+    .fetch_optional(state.repository.pool())
+    .await
+    .map_err(db_problem)?;
+
+    if let Some(row) = row {
+        let req_id: String = row.get("id");
+        let now = now_ms();
+
+        let _ = sqlx::query(
+            "UPDATE chatgpt_bridge_requests SET assistant_content=?, conversation_id=COALESCE(?, conversation_id), conversation_url=COALESCE(?, conversation_url), updated_at_ms=? WHERE id=?",
+        )
+        .bind(input.assistant_content.trim())
+        .bind(input.conversation_id.as_deref().map(str::trim))
+        .bind(input.conversation_url.as_deref().map(str::trim))
+        .bind(now)
+        .bind(&req_id)
+        .execute(state.repository.pool())
+        .await;
+
+        let _ = super::chatgpt_observation::retain_result(
+            &state,
+            &req_id,
+            input.assistant_content.trim(),
+            false,
+        )
+        .await;
+
+        state.publish(crate::websocket::AppEvent {
+            id: Uuid::new_v4().to_string(),
+            event_type: "system.resync_required".to_string(),
+            occurred_at: crate::api::iso_now(),
+            task_id: Some(task_id.to_string()),
+            session_id: None,
+            turn_id: None,
+            payload: json!({ "reason": "task_sync", "taskId": task_id, "requestId": req_id }),
+        });
+
+        return Ok(Json(json!({ "ok": true, "synced": true, "requestId": req_id })));
+    }
+
+    Ok(Json(json!({ "ok": true, "synced": false, "reason": "no_request_found" })))
+}

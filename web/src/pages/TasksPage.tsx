@@ -79,6 +79,16 @@ function TaskConversationDetail({ taskId, refreshVersion, realtime, liveEvents, 
   useEffect(() => { setOlderEvents([]); setNextCursor(undefined); setLoadingOlder(false); }, [taskId]);
   useEffect(() => { if (!olderEvents.length) setNextCursor(result.data?.nextCursor); }, [olderEvents.length, result.data?.nextCursor]);
   useEffect(() => { if (refreshVersion > 0) void refresh(); }, [refreshVersion, refresh]);
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const custom = event as CustomEvent<{ taskId?: string }>;
+      if (!custom.detail?.taskId || custom.detail.taskId === taskId) {
+        void refresh();
+      }
+    };
+    window.addEventListener('chatcmd-task-resync', handler);
+    return () => window.removeEventListener('chatcmd-task-resync', handler);
+  }, [refresh, taskId]);
   useEffect(() => { if (result.data?.task.isSubagent) onSubagentTask(result.data.task.id); for (const subagent of result.data?.subagents ?? []) if (subagent.taskId) onSubagentTask(subagent.taskId); }, [onSubagentTask, result.data?.subagents, result.data?.task.id, result.data?.task.isSubagent]);
   const approvalPolling = (result.data?.subagents ?? []).some((agent) => agent.status === 'pending' || agent.status === 'running') || result.data?.task.allowExecute === null || (result.data?.executionMode === 'approval' && (result.data.task.status === 'running' || (result.data.subagents ?? []).some((subagent) => subagent.status === 'pending' || subagent.status === 'running')));
   useEffect(() => { if (!approvalPolling) return; const timer = window.setInterval(() => void refresh(), 1500); return () => window.clearInterval(timer); }, [approvalPolling, refresh]);

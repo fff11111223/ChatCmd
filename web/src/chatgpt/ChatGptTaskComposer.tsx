@@ -1,8 +1,8 @@
-import { CircleAlert, CircleStop, ExternalLink, FileText, FolderOpen, LoaderCircle, PlugZap, RotateCw, Send, Unplug, X } from 'lucide-react';
+import { CheckCircle2, CircleAlert, CircleStop, ExternalLink, FileText, FolderOpen, LoaderCircle, PlugZap, RotateCw, Send, Unplug, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
-import { chatGptExtensionAvailable, chatGptExtensionStatus, closeChatGptConversationTab, dispatchChatGptRequest, focusChatGptConversationTab, openChatGptConversationTab, reconcileChatGptRequest, recoverChatGptIdentity, reloadBrowserChatTabs, stopChatGptRequest } from '../chatgptBridge';
+import { chatGptExtensionAvailable, chatGptExtensionStatus, closeChatGptConversationTab, dispatchChatGptRequest, focusChatGptConversationTab, openChatGptConversationTab, reconcileChatGptRequest, recoverChatGptIdentity, reloadBrowserChatTabs, stopChatGptRequest, syncBrowserChatTab } from '../chatgptBridge';
 import { Modal } from '../components';
 import { tr } from '../i18n';
 import { canonicalProjectPath } from '../tasks/workspaceProjects';
@@ -33,7 +33,8 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
   const [extensionReady, setExtensionReady] = useState<boolean | null>(null);
   const [chatGptTabOpen, setChatGptTabOpen] = useState<boolean | null>(null);
   const [chatGptReady, setChatGptReady] = useState<boolean | null>(null);
-  const [reloadingTabs, setReloadingTabs] = useState(false);
+  const [syncingTab, setSyncingTab] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<{ message: string; ok: boolean } | null>(null);
   const [queueMode, setQueueMode] = useState<ChatGptQueueMode | null>(null);
   const agents = useLoad(api.agents, []);
   const projects = useLoad(api.workspaceProjects, []);
@@ -222,11 +223,28 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     } catch (reason) { setError(errorText(reason)); }
   };
 
-  const reloadTabs = async () => {
-    if (reloadingTabs) return;
-    setReloadingTabs(true); setError('');
+  const syncTab = async () => {
+    if (syncingTab) return;
+    setSyncingTab(true); setError(''); setSyncFeedback(null);
     try {
-      await reloadBrowserChatTabs();
+      const res = await syncBrowserChatTab({ taskId, conversationUrl });
+      if (res?.assistantContent) {
+        await api.syncChatGptTask(taskId, {
+          assistantContent: res.assistantContent,
+          conversationId: res.conversationId,
+          conversationUrl: res.conversationUrl || conversationUrl,
+        });
+        setSyncFeedback({
+          ok: true,
+          message: tr('Synced latest response from browser ({count} chars).', { count: res.assistantContent.length.toLocaleString() }),
+        });
+      } else {
+        setSyncFeedback({
+          ok: false,
+          message: tr('Browser tab currently has no assistant response to sync.'),
+        });
+      }
+      window.dispatchEvent(new CustomEvent('chatcmd-task-resync', { detail: { taskId } }));
       await reloadBridge();
       if (conversationUrl) {
         const status = await chatGptExtensionStatus(conversationUrl, provider);
@@ -235,7 +253,10 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
         setChatGptReady(status.ready && status.conversationTabOpen && status.conversationReady);
       }
     } catch (reason) { setError(errorText(reason)); }
-    finally { setReloadingTabs(false); }
+    finally {
+      setSyncingTab(false);
+      window.setTimeout(() => setSyncFeedback(null), 5000);
+    }
   };
 
   const recoveryError = bridge.error || syncError;
@@ -245,11 +266,11 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     : !bridge.data
       ? <div className="chatgpt-composer error" role="alert"><CircleAlert /><span>{bridge.error || (isGemini ? tr('Gemini bridge information is unavailable.') : tr('ChatGPT bridge information is unavailable.'))}</span></div>
       : !conversationUrl
-        ? <div className={`chatgpt-composer ${recoveryError ? 'error' : 'loading'}`} role={recoveryError ? 'alert' : 'status'}>{recoveryError ? <CircleAlert /> : <LoaderCircle className="spin" />}<span>{recoveryError || (isGemini ? tr('Gemini conversation identity is still syncing.') : tr('ChatGPT conversation identity is still syncing.'))}</span><button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button></div>
+        ? <div className={`chatgpt-composer ${recoveryError ? 'error' : 'loading'}`} role={recoveryError ? 'alert' : 'status'}>{recoveryError ? <CircleAlert /> : <LoaderCircle className="spin" />}<span>{recoveryError || (isGemini ? tr('Gemini conversation identity is still syncing.') : tr('ChatGPT conversation identity is still syncing.'))}</span><button type="button" onClick={() => void syncTab()} disabled={busy || compactPaused || bridgeSync || syncingTab} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>{syncingTab ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Sync latest response')}</button></div>
         : extensionReady === false
-          ? <div className="chatgpt-tab-required error" role="alert"><Unplug /><div><strong>{isGemini ? tr('Could not connect to Gemini Bridge') : tr('Could not connect to ChatGPT Bridge')}</strong><span>{tr('Enable or reload the extension, then return to this conversation.')}</span></div><button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button></div>
+          ? <div className="chatgpt-tab-required error" role="alert"><Unplug /><div><strong>{isGemini ? tr('Could not connect to Gemini Bridge') : tr('Could not connect to ChatGPT Bridge')}</strong><span>{tr('Enable or reload the extension, then return to this conversation.')}</span></div><button type="button" onClick={() => void syncTab()} disabled={busy || compactPaused || bridgeSync || syncingTab}>{syncingTab ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Sync latest response')}</button></div>
           : chatGptTabOpen === false
-            ? <div className="chatgpt-tab-required" role="alert"><CircleAlert /><div><strong>{isGemini ? tr('This conversation’s Gemini tab is closed') : tr('This conversation’s ChatGPT tab is closed')}</strong><span>{isGemini ? tr('ChatCMD must keep this exact Gemini tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.') : tr('ChatCMD must keep this exact ChatGPT tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.')}</span><div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}><button type="button" onClick={() => void openTab()} disabled={busy || compactPaused || bridgeSync}><ExternalLink />{isGemini ? tr('Open Gemini conversation') : tr('Open ChatGPT conversation')}</button><button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button></div></div></div>
+            ? <div className="chatgpt-tab-required" role="alert"><CircleAlert /><div><strong>{isGemini ? tr('This conversation’s Gemini tab is closed') : tr('This conversation’s ChatGPT tab is closed')}</strong><span>{isGemini ? tr('ChatCMD must keep this exact Gemini tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.') : tr('ChatCMD must keep this exact ChatGPT tab open to send messages and track response status. Reopen the conversation and keep the tab open in your browser.')}</span><div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}><button type="button" onClick={() => void openTab()} disabled={busy || compactPaused || bridgeSync}><ExternalLink />{isGemini ? tr('Open Gemini conversation') : tr('Open ChatGPT conversation')}</button><button type="button" onClick={() => void syncTab()} disabled={busy || compactPaused || bridgeSync || syncingTab}>{syncingTab ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Sync latest response')}</button></div></div></div>
             : bridgeSync ? <p role="status">{compactText('bridgeSync')}</p> : null;
   return <>
     {!isGemini && <CompactStatusCard />}
@@ -278,12 +299,31 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
       <div className="chatgpt-composer-meta chatgpt-composer-actions">
         <button type="button" onClick={() => void closeTab()} disabled={busy || compactPaused || bridgeSync}>{tr('Close this tab')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => void focusTab()} disabled={busy || compactPaused || bridgeSync}>{isGemini ? tr('Focus Gemini tab') : tr('Change model')}</button><span aria-hidden="true">|</span>
-        <button type="button" onClick={() => void reloadTabs()} disabled={busy || compactPaused || bridgeSync || reloadingTabs} title={tr('Reload browser pages (ChatGPT / Gemini)')}>{reloadingTabs ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Reload browser pages')}</button><span aria-hidden="true">|</span>
+        <button type="button" onClick={() => void syncTab()} disabled={busy || compactPaused || bridgeSync || syncingTab} title={tr('Sync latest response from browser (ChatGPT / Gemini)')}>{syncingTab ? <LoaderCircle className="spin" /> : <RotateCw />}{tr('Sync latest response')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => setQueueMode('queued')} disabled={busy || compactPaused || bridgeSync}>{tr('Queue another message')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => setQueueMode('immediate')} disabled={busy || compactPaused || bridgeSync}>{tr('Send immediate message')}</button><span aria-hidden="true">|</span>
         <button type="button" onClick={() => { setFolderMenuOpen(true); void projects.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach project')}</button>
         {!isGemini && <><span aria-hidden="true">|</span><button type="button" onClick={() => { setPluginMenuOpen(true); void agents.reload(); }} disabled={busy || compactPaused || bridgeSync}>{tr('Attach plugin')}</button><span aria-hidden="true">|</span><CompactAction disabled={busy || bridgeSync || !conversationUrl} /></>}
       </div>
+      {syncFeedback && (
+        <div
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontSize: '12px',
+            padding: '4px 8px',
+            borderRadius: '4px',
+            marginTop: '4px',
+            background: syncFeedback.ok ? 'rgba(34, 197, 94, 0.15)' : 'rgba(234, 179, 8, 0.15)',
+            color: syncFeedback.ok ? '#22c55e' : '#eab308',
+          }}
+        >
+          {syncFeedback.ok ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}
+          <span>{syncFeedback.message}</span>
+        </div>
+      )}
       {error && <p className="chatgpt-form-error" role="alert"><CircleAlert />{error}</p>}
     </form>
     {folderMenuOpen && createPortal(<Modal className="workspace-folder-modal" title={tr('Choose project folder')} description={tr('Choose a saved project or open the folder picker on this computer.')} close={() => !folderPicking && setFolderMenuOpen(false)}><div className="workspace-folder-choices"><div className="workspace-folder-project-list">{projects.loading ? <p className="workspace-folder-empty"><LoaderCircle className="spin" /> {tr('Loading projects…')}</p> : projects.data?.length ? projects.data.map((project) => {

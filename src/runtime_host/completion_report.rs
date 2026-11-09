@@ -268,8 +268,11 @@ impl RuntimeHost {
         );
         // Match persistence::save_agent_event's stable key without publishing private call data.
         let material = format!(
-            "agent-event\0agent:{}\0scope:{}\0completed",
-            context.agent_id, context.request_id
+            "agent-event\0agent:{}\0scope:{}\0{}\0{}\0completed",
+            context.agent_id,
+            task.as_str(),
+            turn.as_str(),
+            context.request_id
         );
         let final_event_id = format!(
             "agent-event-{}",

@@ -21,7 +21,8 @@ type BridgeCommand =
   | { action: 'stop'; nonce: string; requestId: string; localBaseUrl: string }
   | { action: 'reconcile'; nonce: string; requestId: string }
   | { action: 'recover-identity'; nonce: string; requestId: string; submittedContent: string; localBaseUrl: string }
-  | { action: 'reload-tabs'; nonce: string };
+  | { action: 'reload-tabs'; nonce: string }
+  | { action: 'sync-latest-turn'; nonce: string; taskId?: string; conversationUrl?: string; localBaseUrl: string };
 
 export type ChatGptExtensionLog = { at: string; level: 'info' | 'warn' | 'error' | string; source: string; message: string };
 type BridgeResponse = { nonce: string; ok: boolean; recovered?: boolean; reason?: string; error?: string; model?: string; logs?: ChatGptExtensionLog[]; extensionVersion?: string; chatGptTabOpen?: boolean; conversationTabOpen?: boolean; conversationReady?: boolean; tabId?: number; tabUrl?: string };
@@ -99,6 +100,17 @@ export async function recoverChatGptIdentity(requestId: string, submittedContent
 
 export async function resumeChatGptCompact(jobId: string, taskId: string) {
   await bridge({ action: 'compact-resume', nonce: nonce(), jobId, taskId, localBaseUrl: window.location.origin }, 5_000);
+}
+
+export async function syncBrowserChatTab(input: { taskId?: string; conversationUrl?: string }): Promise<{ ok: boolean; assistantContent?: string; conversationId?: string; conversationUrl?: string }> {
+  const response = await bridge({
+    action: 'sync-latest-turn',
+    nonce: nonce(),
+    taskId: input.taskId || '',
+    conversationUrl: input.conversationUrl,
+    localBaseUrl: window.location.origin,
+  }, 10_000);
+  return response as { ok: boolean; assistantContent?: string; conversationId?: string; conversationUrl?: string };
 }
 
 export async function reloadBrowserChatTabs(): Promise<{ ok: boolean; reloadedCount: number; chatGptTabCount: number; geminiTabCount: number }> {

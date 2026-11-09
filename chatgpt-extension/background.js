@@ -343,6 +343,31 @@ async function stopRequest(message) {
   if (!delivered && !context?.tabId) throw new Error('Could not find the ChatGPT tab handling this request.');
 }
 
+async function syncLatestTurn(message) {
+  const targetUrl = message.conversationUrl || '';
+  const isGemini = isGeminiUrl(targetUrl);
+  let tab = null;
+  if (isGemini) {
+    tab = await findGeminiTab(targetUrl);
+  } else if (targetUrl) {
+    const target = await conversationTarget(targetUrl);
+    tab = await findConversationTab(target);
+  }
+  if (!tab?.id) {
+    const queryUrls = isGemini ? ['https://gemini.google.com/*'] : ['https://chatgpt.com/*'];
+    const tabs = await chrome.tabs.query({ url: queryUrls });
+    tab = tabs.find((t) => t.id && t.status === 'complete') || tabs[0] || null;
+  }
+  if (!tab?.id) throw new Error(isGemini ? 'Could not find an open Gemini tab.' : 'Could not find an open ChatGPT tab.');
+  const response = await chrome.tabs.sendMessage(tab.id, { type: 'chatcmd-force-extract-latest' });
+  if (!response?.ok) throw new Error(response?.error || 'Failed to extract content from the browser tab.');
+  return {
+    assistantContent: response.assistantContent || '',
+    conversationId: response.conversationId || '',
+    conversationUrl: response.conversationUrl || tab.url || '',
+  };
+}
+
 async function reconcileRequest(requestId) {
   if (!requestId) throw new Error('Missing request ID to synchronize.');
   const context = await requestContext(requestId);
