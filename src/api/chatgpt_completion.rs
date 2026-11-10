@@ -22,6 +22,8 @@ const MAX_ASSISTANT_CHARS: usize = 100_000;
 pub(super) struct BrowserCompletionInput {
     conversation_id: Option<String>,
     conversation_url: Option<String>,
+    #[serde(default, alias = "conversation_title")]
+    conversation_title: Option<String>,
     assistant_content: String,
 }
 
@@ -115,6 +117,7 @@ pub(super) async fn bridge_browser_completed(
             payload,
         );
     }
+    super::chatgpt_support::maybe_update_task_title(&state, &events.task_id, input.conversation_title.as_deref()).await?;
     request_json(&state, request_id).await
 }
 

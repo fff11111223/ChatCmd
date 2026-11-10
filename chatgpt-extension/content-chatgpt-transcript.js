@@ -7,7 +7,7 @@
     + ASSISTANT_TEXT_FALLBACK;
   // aria-hidden only removes a node from the accessibility tree; it does not mean
   // the user cannot see it. Filter by actual rendered visibility below instead.
-  const EXCLUDED = 'button,svg,script,style,.sr-only,.visually-hidden,[hidden],[role="alert"],'
+  const EXCLUDED = 'button,svg,script,style,.sr-only,.visually-hidden,[class*="sr-only"],[class*="visually-hidden"],[hidden],[role="alert"],'
     + '[data-chatcmd-ui],.chatcmd-return-button,.chatcmd-approval-panel,.clf-stream,.clf-stage,'
     + 'input,textarea,[contenteditable="true"],[data-testid*="composer" i],'
     + '[data-testid*="tool-call"],[data-tool-call-id],span[class*="tool-message"],'
@@ -106,6 +106,62 @@
     const value = location.pathname.match(/^\/(?:g\/[^/]+\/)?c\/([^/?#]+)(?:\/|$)/)?.[1] || '';
     try { return decodeURIComponent(value); } catch { return value; }
   };
+  function cleanBrowserTitle(raw) {
+    let title = String(raw || '').trim();
+    title = title.replace(/\s*[-–—|]\s*(?:ChatGPT|Gemini).*$/i, '').replace(/^(?:ChatGPT|Gemini)\s*[-–—|]\s*/i, '');
+    title = title.replace(/^\(\d+\)\s*/, '');
+    title = title.replace(/^[●•]\s*/, '');
+    return title.trim();
+  }
+  function isGenericTitle(text) {
+    return !text || /^(?:ChatGPT|Gemini|New chat|新對話|新的聊天|新聊天|Untitled)$/i.test(String(text).trim());
+  }
+  function conversationTitle() {
+    const docTitle = cleanBrowserTitle(document.title);
+    if (!isGenericTitle(docTitle)) return docTitle;
+    try {
+      const topButtons = document.querySelectorAll(
+        'header button, [data-testid*="title"], [data-testid*="header"] button, ' +
+        'div[class*="sticky"] button, main > div:first-child button, button[aria-haspopup="menu"]'
+      );
+      for (const btn of topButtons) {
+        const clone = btn.cloneNode(true);
+        for (const extra of clone.querySelectorAll('button, svg, [aria-hidden="true"], [class*="sr-only"]')) extra.remove();
+        const text = cleanBrowserTitle(clone.textContent);
+        if (!isGenericTitle(text) && text.length < 120) return text;
+      }
+    } catch { /* fallback */ }
+    try {
+      const convId = conversationId();
+      if (convId) {
+        const links = document.querySelectorAll(`a[href*="${convId}"]`);
+        for (const link of links) {
+          const clone = link.cloneNode(true);
+          for (const extra of clone.querySelectorAll('button, svg, [aria-hidden="true"]')) extra.remove();
+          const text = cleanBrowserTitle(clone.textContent);
+          if (!isGenericTitle(text)) return text;
+        }
+      }
+    } catch { /* fallback */ }
+    try {
+      const activeLinks = document.querySelectorAll(
+        'nav a[aria-current], aside a[aria-current], a[class*="surface-secondary"], ' +
+        'nav a[class*="active"], aside a[class*="active"]'
+      );
+      for (const link of activeLinks) {
+        const clone = link.cloneNode(true);
+        for (const extra of clone.querySelectorAll('button, svg, [aria-hidden="true"]')) extra.remove();
+        const text = cleanBrowserTitle(clone.textContent);
+        if (!isGenericTitle(text)) return text;
+      }
+    } catch { /* fallback */ }
+    return '';
+  }
+  function cleanUserText(text) {
+    return String(text || '')
+      .replace(/^(?:你說了|你说|you said|chatgpt said|chatgpt 說)[：:\s]+/i, '')
+      .trim();
+  }
   function plainText(node) {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
     if (!(node instanceof Element) || hidden(node)) return '';
@@ -117,7 +173,8 @@
       : node.querySelector('[data-message-author-role="user"]') || node;
     const parts = queryAll('.whitespace-pre-wrap', body)
       .filter((part) => !part.parentElement?.closest('.whitespace-pre-wrap'));
-    return (parts.length ? parts.map(plainText).join('\n') : plainText(body)).trim();
+    const raw = (parts.length ? parts.map(plainText).join('\n') : plainText(body)).trim();
+    return cleanUserText(raw);
   }
   function fingerprint(text) {
     let hash = 2166136261;
@@ -486,5 +543,6 @@
       + `bodyTextLength=${normalize(document.body?.innerText).length}; ${userScanDiagnostics()}`;
   }
   globalThis.ChatCmdTranscript = Object.freeze({ latestUser, userText, readParts, readDiagnostics, normalize,
-    isFooterDisclaimer, isActivityStatus, isNonAnswerUiText, isThinkingPlaceholder, isThoughtNode, conversationId, userScanDiagnostics, toolBlockDiagnostics });
+    isFooterDisclaimer, isActivityStatus, isNonAnswerUiText, isThinkingPlaceholder, isThoughtNode, conversationId,
+    conversationTitle, cleanUserText, userScanDiagnostics, toolBlockDiagnostics });
 })();

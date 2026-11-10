@@ -35,6 +35,7 @@ async function handleNativeTurn(message, sender) {
   const request = await postJson(localBaseUrl, '/api/local/chatgpt/capture/turns', {
     conversationId: id, conversationUrl: tab.url,
     userMessageId: message.userMessageId, content: message.content,
+    conversationTitle: message.conversationTitle || '',
   });
   if (!request?.id || request.conversationId !== id) throw new Error('Invalid native capture acknowledgement.');
   // A late HTTP result may be retained in SQLite, but cannot claim the tab after navigation.
@@ -45,9 +46,31 @@ async function handleNativeTurn(message, sender) {
   return { request };
 }
 
+async function handleConversationTitle(message, sender) {
+  const tabId = sender.tab?.id;
+  if (!tabId || (sender.frameId !== undefined && sender.frameId !== 0)) return { ignored: true };
+  const tab = await safeTab(tabId);
+  const id = conversationIdFromUrl(tab?.url || '');
+  if (!id || id !== message.conversationId) return { ignored: true };
+  const bindings = await conversationBindings();
+  const binding = bindings[conversationKey(id)];
+  const localBaseUrl = localOrigin(binding?.localBaseUrl || approvalBaseUrl);
+  await postJson(localBaseUrl, '/api/local/chatgpt/capture/title', {
+    conversationId: id,
+    conversationUrl: tab.url,
+    title: message.conversationTitle,
+  }).catch(() => {});
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'chatcmd-chatgpt-native-turn') {
     void handleNativeTurn(message, sender).then((value) => sendResponse({ ok: true, ...value }))
+      .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+    return true;
+  }
+  if (message?.type === 'chatcmd-chatgpt-title') {
+    void handleConversationTitle(message, sender).then((value) => sendResponse({ ok: true, ...value }))
       .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
     return true;
   }

@@ -433,8 +433,93 @@ pub(super) fn bridge_task_id(agent_id: &str, scope: &str, first_message: &str) -
     )
 }
 
+pub(super) fn clean_user_text(text: &str) -> &str {
+    let trimmed = text.trim();
+    let lower = trimmed.to_lowercase();
+    for prefix in [
+        "你說了：",
+        "你說了:",
+        "你說了 ",
+        "你说：",
+        "你说:",
+        "你说 ",
+        "you said:",
+        "you said ",
+        "chatgpt said:",
+        "chatgpt said ",
+    ] {
+        if lower.starts_with(prefix) {
+            return trimmed[prefix.len()..].trim();
+        }
+    }
+    trimmed
+}
+
+pub(super) fn is_generic_conversation_title(title: &str) -> bool {
+    let lower = title.trim().to_ascii_lowercase();
+    lower.is_empty()
+        || lower == "chatgpt"
+        || lower == "new chat"
+        || lower == "新對話"
+        || lower == "新的聊天"
+        || lower == "新聊天"
+}
+
+pub(super) fn conversation_task_id(conversation_id: &str) -> String {
+    format!(
+        "task-chat-{}",
+        Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!("browser-conversation\0{}", conversation_id.trim()).as_bytes()
+        )
+    )
+}
+
+pub(super) async fn maybe_update_task_title(
+    state: &Arc<AppState>,
+    task_id: &str,
+    new_title: Option<&str>,
+) -> Result<(), Problem> {
+    let Some(title) = new_title.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(());
+    };
+    if is_generic_conversation_title(title) {
+        return Ok(());
+    }
+    let current_title: Option<String> = sqlx::query_scalar("SELECT title FROM tasks WHERE id=?")
+        .bind(task_id)
+        .fetch_optional(state.repository.pool())
+        .await
+        .map_err(db_problem)?;
+
+    let should_update = match current_title.as_deref().map(str::trim) {
+        None | Some("") => true,
+        Some(curr) => curr != title,
+    };
+
+    if should_update {
+        let clean = if title.chars().count() > 160 {
+            title.chars().take(160).collect::<String>()
+        } else {
+            title.to_string()
+        };
+        sqlx::query("UPDATE tasks SET title=? WHERE id=?")
+            .bind(&clean)
+            .bind(task_id)
+            .execute(state.repository.pool())
+            .await
+            .map_err(db_problem)?;
+
+        let mut event = AppEvent::new("conversation.title_updated", json!({ "title": clean }));
+        event.task_id = Some(task_id.to_string());
+        state.publish(event);
+    }
+    Ok(())
+}
+
 pub(super) fn compact_title(content: &str) -> String {
-    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = clean_user_text(content);
+    let normalized = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = normalized.chars();
     let title = chars.by_ref().take(72).collect::<String>();
     if chars.next().is_some() {

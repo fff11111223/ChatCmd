@@ -56,8 +56,14 @@
     };
     if (user.content.trim().startsWith('```chatcmd_tool_result') && !hasPendingTools()) { remember(key); report('turn-ignored', 'tool result message'); return; }
     if (controller.active) {
-      if (controller.active.observer?.userMessageId === user.id && controller.active.observer.active) remember(key);
-      else if (controller.active.observer?.userMessageId) retry(500);
+      const obs = controller.active.observer;
+      const isCurrentTurn = (obs?.userMessageId && obs.userMessageId === user.id)
+        || (controller.active.submittedContent && dom.cleanUserText?.(user.content) === dom.cleanUserText?.(controller.active.submittedContent));
+      if (isCurrentTurn) {
+        remember(key);
+      } else {
+        retry(500);
+      }
       return;
     }
     if (seen.has(key) || pending || Date.now() < retryAt) return;
@@ -66,7 +72,8 @@
       report('capture-request-sending');
       const response = await globalThis.ChatCmdRuntime.sendMessage({ type: 'chatcmd-chatgpt-native-turn',
         conversationId: conversationId(), conversationUrl: location.href,
-        userMessageId: user.id, content: user.content });
+        userMessageId: user.id, content: user.content,
+        conversationTitle: dom.conversationTitle?.() || '' });
       if (stopped || !controller.current() || keyFor(dom.latestUser()) !== key || controller.active) return;
       if (response?.ok && response.ignored) { remember(key); report('capture-request-ignored'); return; }
       if (!response?.ok || !response.request) throw new Error(response?.error || 'ChatCMD did not acknowledge the browser turn.');
@@ -87,6 +94,21 @@
       if (!stopped) retry(5000);
     } finally { pending = false; }
   }
+  let lastReportedTitle = '';
+  function syncConversationTitle() {
+    if (stopped || !dom?.conversationId || !dom?.conversationTitle) return;
+    const convId = conversationId();
+    if (!convId) return;
+    const title = dom.conversationTitle();
+    if (!title || title === lastReportedTitle) return;
+    lastReportedTitle = title;
+    void globalThis.ChatCmdRuntime.sendMessage({
+      type: 'chatcmd-chatgpt-title',
+      conversationId: convId,
+      conversationUrl: location.href,
+      conversationTitle: title,
+    }).catch(() => {});
+  }
   function schedule() {
     if (queued || stopped) return;
     queued = true;
@@ -103,23 +125,32 @@
     }
     return false;
   }
-  const observer = new MutationObserver((records) => { if (mutationAffectsUser(records)) schedule(); });
+  const observer = new MutationObserver((records) => {
+    if (mutationAffectsUser(records)) schedule();
+    syncConversationTitle();
+  });
   observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+  const titleObserver = new MutationObserver(() => syncConversationTitle());
+  if (document.head) titleObserver.observe(document.head, { subtree: true, characterData: true, childList: true });
   function poll() {
     if (stopped) return;
+    syncConversationTitle();
     void tick();
     // Idle polling is a low-frequency local fallback, never a perpetual service-worker keepalive.
     pollTimer = later(poll, NATIVE_FALLBACK_POLL_MS, { background: false });
   }
   function stop() {
     if (stopped) return;
-    stopped = true; observer.disconnect(); cancel(pollTimer); cancel(retryTimer);
+    stopped = true; observer.disconnect(); titleObserver.disconnect(); cancel(pollTimer); cancel(retryTimer);
     document.removeEventListener('visibilitychange', schedule);
     window.removeEventListener('pageshow', schedule);
   }
   document.addEventListener('visibilitychange', schedule);
   window.addEventListener('pageshow', schedule);
   pollTimer = later(poll, NATIVE_FALLBACK_POLL_MS, { background: false });
+  later(syncConversationTitle, 1000);
+  later(syncConversationTitle, 3000);
+  later(syncConversationTitle, 6000);
   if (typeof chrome !== 'undefined' && chrome?.runtime?.onMessage?.addListener) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === 'chatcmd-trigger-native-capture') {

@@ -17,6 +17,15 @@ pub(super) async fn tasks(
         .list_tasks(500)
         .await
         .map_err(storage_problem)?;
+    let mut seen_scopes = std::collections::HashSet::new();
+    all_tasks.retain(|task| {
+        if let Some(scope) = task.conversation_scope_hash.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let lower = scope.to_ascii_lowercase();
+            seen_scopes.insert(lower)
+        } else {
+            true
+        }
+    });
     if let Some(project_folder) = query
         .project_folder
         .as_deref()
@@ -696,7 +705,7 @@ fn task_value(task: chatcmd_core::Task) -> Value {
         .allow_execute
         .is_none()
         .then(|| iso_ms(task.created_at_ms.saturating_add(60_000)));
-    json!({"id":task.id.as_str(),"title":task.title,"source":task.source,"projectFolder":task.project_folder,"allowExecute":task.allow_execute,"approvalDeadlineUtc":approval_deadline_utc,"status":task.status.as_str(),"updatedAtUtc":iso_ms(task.updated_at_ms),"createdAtUtc":iso_ms(task.created_at_ms),"generation":task.generation,"activeSessionId":task.active_session_id.map(|id|id.into_string())})
+    json!({"id":task.id.as_str(),"title":task.title,"source":task.source,"projectFolder":task.project_folder,"allowExecute":task.allow_execute,"approvalDeadlineUtc":approval_deadline_utc,"status":task.status.as_str(),"updatedAtUtc":iso_ms(task.updated_at_ms),"createdAtUtc":iso_ms(task.created_at_ms),"generation":task.generation,"activeSessionId":task.active_session_id.map(|id|id.into_string()),"conversationScopeHash":task.conversation_scope_hash})
 }
 pub(super) fn timeline_row(row: &sqlx::sqlite::SqliteRow) -> Value {
     let kind = row.get::<String, _>("kind");

@@ -228,15 +228,18 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
     setSyncingTab(true); setError(''); setSyncFeedback(null);
     try {
       const res = await syncBrowserChatTab({ taskId, conversationUrl });
-      if (res?.assistantContent) {
+      if (res?.assistantContent || res?.conversationTitle) {
         await api.syncChatGptTask(taskId, {
-          assistantContent: res.assistantContent,
+          assistantContent: res.assistantContent || '',
           conversationId: res.conversationId,
           conversationUrl: res.conversationUrl || conversationUrl,
+          conversationTitle: res.conversationTitle,
         });
         setSyncFeedback({
           ok: true,
-          message: tr('Synced latest response from browser ({count} chars).', { count: res.assistantContent.length.toLocaleString() }),
+          message: res.assistantContent
+            ? tr('Synced latest response from browser ({count} chars).', { count: res.assistantContent.length.toLocaleString() })
+            : tr('Synced conversation title from browser.'),
         });
       } else {
         setSyncFeedback({

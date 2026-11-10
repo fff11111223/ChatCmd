@@ -184,6 +184,7 @@ async function handleProgress(message, tabId) {
     if (conversationIdFromUrl(tab?.url || '') !== message.conversationId) throw new Error('Observation conversation changed.');
     return postJson(context.localBaseUrl, `/api/local/chatgpt/bridge/${encodeURIComponent(message.requestId)}/observation`, {
       conversationId: message.conversationId, conversationUrl: message.conversationUrl,
+      conversationTitle: message.conversationTitle || '',
       userMessageId: message.userMessageId, revision: message.revision, messages: message.messages, completed: message.completed === true,
     });
   }
@@ -235,6 +236,7 @@ async function handleProgress(message, tabId) {
   if (message.stage === 'started') {
     await postJson(context.localBaseUrl, `/api/local/chatgpt/bridge/${encodeURIComponent(message.requestId)}/started`, {
       conversationId: identity.conversationId, conversationUrl: identity.conversationUrl,
+      conversationTitle: message.conversationTitle || '',
       model: message.model, userText: message.userText,
     });
     if (identity.conversationId && identity.conversationUrl) await forgetRecoveryRequest(message.requestId);
@@ -243,6 +245,7 @@ async function handleProgress(message, tabId) {
   if (message.stage === 'browser-completed') {
     const result = await postJson(context.localBaseUrl, `/api/local/chatgpt/bridge/${encodeURIComponent(message.requestId)}/browser-completed`, {
       conversationId: identity.conversationId, conversationUrl: identity.conversationUrl,
+      conversationTitle: message.conversationTitle || '',
       assistantContent: message.assistantContent,
     });
     await releaseRequest(message.requestId);
@@ -252,7 +255,9 @@ async function handleProgress(message, tabId) {
   if (message.stage === 'result') {
     await postJson(context.localBaseUrl, `/api/local/chatgpt/bridge/${encodeURIComponent(message.requestId)}/result`, {
       status: message.status, conversationId: identity.conversationId,
-      conversationUrl: identity.conversationUrl, assistantContent: message.assistantContent,
+      conversationUrl: identity.conversationUrl,
+      conversationTitle: message.conversationTitle || '',
+      assistantContent: message.assistantContent,
       errorMessage: message.errorMessage,
     });
     await releaseRequest(message.requestId);

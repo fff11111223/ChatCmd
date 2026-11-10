@@ -76,6 +76,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/chatgpt/capture/capabilities", get(capture_capabilities))
         .route("/chatgpt/capture/turns", post(native_turn))
+        .route("/chatgpt/capture/title", post(capture_title))
         .route("/chatgpt/requests", post(create_request))
         .route("/chatgpt/requests/{id}", get(request))
         .route("/chatgpt/tasks/{task_id}", get(task_bridge))

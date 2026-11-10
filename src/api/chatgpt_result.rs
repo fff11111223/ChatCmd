@@ -19,6 +19,8 @@ pub(super) struct BridgeResult {
     conversation_id: Option<String>,
     #[serde(alias = "conversation_url")]
     conversation_url: Option<String>,
+    #[serde(default, alias = "conversation_title")]
+    conversation_title: Option<String>,
     #[serde(alias = "assistant_content")]
     assistant_content: Option<String>,
     #[serde(alias = "error_message")]
@@ -205,5 +207,6 @@ pub(super) async fn bridge_result(
         )
         .await?;
     }
+    super::chatgpt_support::maybe_update_task_title(&state, &task_id, input.conversation_title.as_deref()).await?;
     request_json(&state, request_id.trim()).await
 }

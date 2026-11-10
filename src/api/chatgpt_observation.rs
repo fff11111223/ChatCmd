@@ -1,7 +1,7 @@
 //! Durable, replaceable snapshots of public ChatGPT page content, independent of MCP.
 use super::{
     Problem,
-    chatgpt_support::{not_found_chat, publish, validate_conversation},
+    chatgpt_support::{maybe_update_task_title, not_found_chat, publish, validate_conversation},
     db_problem, now_ms,
 };
 use crate::{chatgpt_transcript, websocket::AppState};
@@ -35,6 +35,8 @@ pub(super) struct Observation {
     pub user_message_id: Option<String>,
     #[serde(default)]
     pub completed: bool,
+    #[serde(default, alias = "conversation_title")]
+    pub conversation_title: Option<String>,
 }
 
 pub(super) struct ObservationEvents {
@@ -52,7 +54,9 @@ pub(super) async fn bridge_observation(
 ) -> Result<Json<Value>, Problem> {
     let events = persist_observation(&state.repository, request_id.trim(), &input).await?;
     let revision = events.revision;
+    let task_id = events.task_id.clone();
     publish_observation(&state, events);
+    maybe_update_task_title(&state, &task_id, input.conversation_title.as_deref()).await?;
     Ok(Json(json!({"accepted":true,"revision":revision})))
 }
 
@@ -306,6 +310,7 @@ pub(super) async fn retain_result(
         conversation_url,
         messages,
         completed,
+        conversation_title: None,
     };
     let events = persist_observation(&state.repository, request_id, &input).await?;
     publish_observation(state, events);

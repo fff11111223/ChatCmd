@@ -163,6 +163,7 @@
       const sentRevision = revision;
       const payload = { type: 'chatcmd-chatgpt-progress', stage: 'observation', requestId,
         conversationId, conversationUrl: location.href, userMessageId: userId, revision: sentRevision,
+        conversationTitle: dom.conversationTitle?.() || '',
         messages: messages.map((message) => ({ ...message })), completed: complete };
       lastSend = Date.now();
       inFlight = globalThis.ChatCmdRuntime.sendMessage(payload).then((response) => {

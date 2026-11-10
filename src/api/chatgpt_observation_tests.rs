@@ -44,6 +44,7 @@ fn input(revision: u64, content: &str, completed: bool) -> Observation {
             content: content.into(),
         }],
         completed,
+        conversation_title: None,
     }
 }
 async fn snapshot(repository: &SqliteRepository) -> Value {

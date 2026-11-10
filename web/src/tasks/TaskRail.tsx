@@ -181,12 +181,28 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
     finally { setDeleting(false); }
   }, [deleteTarget, navigate, taskId]);
 
-  const tasks = useMemo(() => [...loadedTasks].sort((a, b) => Date.parse(b.updatedAtUtc) - Date.parse(a.updatedAtUtc)).filter((task) => `${conversationName(task)} ${task.id} ${task.outputPreview ?? ''}`.toLowerCase().includes(query.toLowerCase())), [query, loadedTasks]);
+  const deduplicatedLoadedTasks = useMemo(() => {
+    const sorted = [...loadedTasks].sort((a, b) => Date.parse(b.updatedAtUtc) - Date.parse(a.updatedAtUtc));
+    const seenIds = new Set<string>();
+    const seenScopes = new Set<string>();
+    return sorted.filter((task) => {
+      if (seenIds.has(task.id)) return false;
+      seenIds.add(task.id);
+      const scope = task.conversationScopeHash?.trim().toLowerCase();
+      if (scope) {
+        if (seenScopes.has(scope)) return false;
+        seenScopes.add(scope);
+      }
+      return true;
+    });
+  }, [loadedTasks]);
+
+  const tasks = useMemo(() => deduplicatedLoadedTasks.filter((task) => `${conversationName(task)} ${task.id} ${task.outputPreview ?? ''}`.toLowerCase().includes(query.toLowerCase())), [query, deduplicatedLoadedTasks]);
   const taskGroups = useMemo(() => groupTasksByWorkspaceProjects(projects, tasks), [projects, tasks]);
   useEffect(() => {
     if (loading || groupExpansionInitialized.current) return;
     groupExpansionInitialized.current = true;
-    const grouped = groupTasksByWorkspaceProjects(projects, [...loadedTasks].sort((a, b) => Date.parse(b.updatedAtUtc) - Date.parse(a.updatedAtUtc)));
+    const grouped = groupTasksByWorkspaceProjects(projects, deduplicatedLoadedTasks);
     const expanded = new Set<string>([UNCLASSIFIED_GROUP]);
     if (grouped.projects[0]) expanded.add(grouped.projects[0].project.id);
     for (const { project, tasks: projectTasks } of grouped.projects) {

@@ -8,6 +8,7 @@ const {
   assistantNodes, clickStopButton, findSendButton, findStopButton, findThreadError, findTooLongSubmissionError,
   findVisible, isSendBlockedByTooLong, isTooLongText, isVisible, latestMessageText, normalize,
 } = globalThis.ChatCmdConversationDom;
+const dom = globalThis.ChatCmdTranscript || globalThis.ChatCmdConversationDom || {};
 const CONTENT_CONTEXT = globalThis.ChatCmdRuntime.install('chatgpt');
 let activeRequest = null;
 let reconcileScheduled = false;
@@ -88,6 +89,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       provider: 'chatgpt',
       conversationId: identity?.conversationId || '',
       conversationUrl: identity?.conversationUrl || window.location.href,
+      conversationTitle: dom?.conversationTitle?.() || '',
       assistantContent: assistantContent || '',
     });
     return false;
@@ -156,6 +158,7 @@ async function runRequest(message) {
       stage: 'started',
       conversationId,
       conversationUrl,
+      conversationTitle: dom.conversationTitle?.() || '',
       model: message.model || 'Auto',
       userText: latestMessageText('user') || message.submittedContent,
     });
@@ -242,7 +245,7 @@ async function reportRequestResult(payload) {
     if (activeRequest.resultReported) return;
     await activeRequest.observer?.flush(payload.status === 'completed');
   }
-  await progress({ requestId: payload.requestId, stage: 'result', ...payload });
+  await progress({ requestId: payload.requestId, stage: 'result', conversationTitle: dom.conversationTitle?.() || '', ...payload });
   if (activeRequest?.id === payload.requestId) activeRequest.resultReported = true;
 }
 
@@ -493,7 +496,8 @@ async function reportBrowserCompletion(requestId, assistantContent) {
   try {
     const response = await globalThis.ChatCmdRuntime.sendMessage({
       type: 'chatcmd-chatgpt-progress', stage: 'browser-completed', requestId,
-      conversationId: identity?.conversationId, conversationUrl: identity?.conversationUrl || window.location.href, assistantContent,
+      conversationId: identity?.conversationId, conversationUrl: identity?.conversationUrl || window.location.href,
+      conversationTitle: dom.conversationTitle?.() || '', assistantContent,
     });
     if (response?.ok !== true || response.browserCompleted !== true || response.hasFinalResponse !== true) return false;
     if (activeRequest?.id === requestId) activeRequest.resultReported = true;

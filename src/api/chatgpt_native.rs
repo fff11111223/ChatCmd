@@ -2,7 +2,10 @@
 use super::chatgpt_observation::{
     Observation, persist_observation, publish_observation, validate_identity,
 };
-use super::chatgpt_support::{compact_title, openai_scope, request_json, validate_message};
+use super::chatgpt_support::{
+    compact_title, is_generic_conversation_title, maybe_update_task_title, openai_scope,
+    request_json, validate_message,
+};
 use super::{Problem, db_problem, now_ms};
 use crate::websocket::AppState;
 use axum::{Json, extract::State, http::StatusCode};
@@ -23,6 +26,8 @@ pub(super) struct NativeTurnInput {
     pub conversation_url: String,
     pub user_message_id: String,
     pub content: String,
+    #[serde(default, alias = "conversation_title")]
+    pub conversation_title: Option<String>,
 }
 
 pub(super) async fn native_turn(
@@ -41,10 +46,19 @@ pub(super) async fn native_turn(
             revision: 1,
             messages: Vec::new(),
             completed: false,
+            conversation_title: input.conversation_title.clone(),
         },
     )
     .await?;
     publish_observation(&state, events);
+    let task_id: Option<String> = sqlx::query_scalar("SELECT task_id FROM chatgpt_bridge_requests WHERE id=?")
+        .bind(&request_id)
+        .fetch_optional(state.repository.pool())
+        .await
+        .map_err(db_problem)?;
+    if let Some(task_id) = task_id.as_deref() {
+        maybe_update_task_title(&state, task_id, input.conversation_title.as_deref()).await?;
+    }
     request_json(&state, &request_id).await
 }
 
@@ -122,7 +136,11 @@ pub(super) async fn enroll(
         );
         sqlx::query("INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,allow_execute,status,generation,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,0,'running',1,?,?) ON CONFLICT(id) DO NOTHING")
             .bind(&task).bind(recorder_id).bind(device_id).bind(&scope)
-            .bind(compact_title(&input.content)).bind(source).bind(now).bind(now)
+            .bind(if let Some(t) = input.conversation_title.as_deref().map(str::trim).filter(|t| !is_generic_conversation_title(t)) {
+                if t.chars().count() > 160 { t.chars().take(160).collect::<String>() } else { t.to_string() }
+            } else {
+                compact_title(&input.content)
+            }).bind(source).bind(now).bind(now)
             .execute(&mut *tx).await.map_err(db_problem)?;
         (task, recorder_id.to_owned())
     };
@@ -145,4 +163,46 @@ pub(super) async fn enroll(
 
 pub(super) async fn capture_capabilities() -> Json<Value> {
     Json(json!({"provider":"chatcmd","captureProtocol":2,"nativeTurns":true,"snapshots":true}))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CaptureTitleInput {
+    pub conversation_id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub conversation_url: Option<String>,
+    pub title: String,
+}
+
+pub(super) async fn capture_title(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<CaptureTitleInput>,
+) -> Result<Json<Value>, Problem> {
+    let clean_title = input.title.trim();
+    if clean_title.is_empty() || is_generic_conversation_title(clean_title) {
+        return Ok(Json(json!({ "updated": false, "reason": "generic_or_empty" })));
+    }
+    let scope = openai_scope(&input.conversation_id);
+    let task_id: Option<String> = sqlx::query_scalar(
+        "SELECT t.id FROM tasks t \
+         WHERE t.id = (SELECT task_id FROM chatgpt_conversations WHERE conversation_id = ?) \
+            OR t.conversation_scope_hash = ? \
+         ORDER BY CASE WHEN t.id = (SELECT task_id FROM chatgpt_conversations WHERE conversation_id = ?) THEN 0 ELSE 1 END \
+         LIMIT 1",
+    )
+    .bind(&input.conversation_id)
+    .bind(&scope)
+    .bind(&input.conversation_id)
+    .fetch_optional(state.repository.pool())
+    .await
+    .map_err(db_problem)?;
+
+    let target_task_id = match task_id {
+        Some(id) => id,
+        None => super::chatgpt_support::conversation_task_id(&input.conversation_id),
+    };
+
+    maybe_update_task_title(&state, &target_task_id, Some(clean_title)).await?;
+    Ok(Json(json!({ "updated": true, "taskId": target_task_id, "title": clean_title })))
 }

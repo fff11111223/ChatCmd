@@ -199,7 +199,8 @@ fn extension_route_allowed(method: &Method, path: &str) -> bool {
             ],
         ) => true,
         (&Method::GET, ["api", "local", "chatgpt", "capture", "capabilities"])
-        | (&Method::POST, ["api", "local", "chatgpt", "capture", "turns"]) => true,
+        | (&Method::POST, ["api", "local", "chatgpt", "capture", "turns"])
+        | (&Method::POST, ["api", "local", "chatgpt", "capture", "title"]) => true,
         (&Method::GET, ["api", "local", "chatgpt", "requests", _]) => true,
         (&Method::POST, ["api", "local", "subagents", _, "fallback", action]) => {
             matches!(*action, "started" | "result" | "heartbeat")

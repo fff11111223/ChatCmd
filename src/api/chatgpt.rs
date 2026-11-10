@@ -43,6 +43,8 @@ pub(super) struct BridgeStarted {
     #[serde(alias = "conversation_url")]
     conversation_url: String,
     model: Option<String>,
+    #[serde(default, alias = "conversation_title")]
+    conversation_title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +54,8 @@ pub(super) struct BridgeIdentity {
     conversation_id: String,
     #[serde(alias = "conversation_url")]
     conversation_url: String,
+    #[serde(default, alias = "conversation_title")]
+    conversation_title: Option<String>,
 }
 
 pub(super) async fn create_request(
@@ -242,11 +246,21 @@ pub(super) async fn bridge_started(
         // conversation scope before bridge_started was called. Reuse it so that we
         // don't produce a second, duplicate task in the task rail.
         id
+    } else if !input.conversation_id.trim().is_empty() {
+        conversation_task_id(&input.conversation_id)
     } else {
         bridge_task_id(&agent_id, &scope, &submitted)
     };
     let now = now_ms();
-    let title = compact_title(&user_content);
+    let title = if let Some(t) = input.conversation_title.as_deref().map(str::trim).filter(|t| !is_generic_conversation_title(t)) {
+        if t.chars().count() > 160 {
+            t.chars().take(160).collect::<String>()
+        } else {
+            t.to_string()
+        }
+    } else {
+        compact_title(&user_content)
+    };
     let model = input
         .model
         .as_deref()
@@ -269,6 +283,7 @@ pub(super) async fn bridge_started(
         },
     )
     .await?;
+    maybe_update_task_title(&state, &candidate_task_id, input.conversation_title.as_deref()).await?;
     request_json(&state, request_id).await
 }
 
@@ -437,6 +452,7 @@ pub(super) async fn bridge_identity(
         .await
         .map_err(db_problem)?;
     transaction.commit().await.map_err(db_problem)?;
+    maybe_update_task_title(&state, &task_id, input.conversation_title.as_deref()).await?;
     request_json(&state, request_id).await
 }
 
@@ -447,6 +463,8 @@ pub(super) struct TaskSyncInput {
     pub assistant_content: String,
     pub conversation_id: Option<String>,
     pub conversation_url: Option<String>,
+    #[serde(default, alias = "conversation_title")]
+    pub conversation_title: Option<String>,
 }
 
 pub(super) async fn task_sync(
@@ -455,8 +473,11 @@ pub(super) async fn task_sync(
     Json(input): Json<TaskSyncInput>,
 ) -> Result<Json<Value>, Problem> {
     let task_id = task_id.trim();
+    if let Some(title) = input.conversation_title.as_deref() {
+        let _ = maybe_update_task_title(&state, task_id, Some(title)).await;
+    }
     if input.assistant_content.trim().is_empty() {
-        return Ok(Json(json!({ "ok": true, "synced": false, "reason": "empty_content" })));
+        return Ok(Json(json!({ "ok": true, "synced": input.conversation_title.is_some(), "reason": "empty_content" })));
     }
 
     let row = sqlx::query(

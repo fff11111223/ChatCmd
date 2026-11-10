@@ -102,7 +102,7 @@ export async function resumeChatGptCompact(jobId: string, taskId: string) {
   await bridge({ action: 'compact-resume', nonce: nonce(), jobId, taskId, localBaseUrl: window.location.origin }, 5_000);
 }
 
-export async function syncBrowserChatTab(input: { taskId?: string; conversationUrl?: string }): Promise<{ ok: boolean; assistantContent?: string; conversationId?: string; conversationUrl?: string }> {
+export async function syncBrowserChatTab(input: { taskId?: string; conversationUrl?: string }): Promise<{ ok: boolean; assistantContent?: string; conversationId?: string; conversationUrl?: string; conversationTitle?: string }> {
   const response = await bridge({
     action: 'sync-latest-turn',
     nonce: nonce(),
@@ -110,7 +110,7 @@ export async function syncBrowserChatTab(input: { taskId?: string; conversationU
     conversationUrl: input.conversationUrl,
     localBaseUrl: window.location.origin,
   }, 10_000);
-  return response as { ok: boolean; assistantContent?: string; conversationId?: string; conversationUrl?: string };
+  return response as { ok: boolean; assistantContent?: string; conversationId?: string; conversationUrl?: string; conversationTitle?: string };
 }
 
 export async function reloadBrowserChatTabs(): Promise<{ ok: boolean; reloadedCount: number; chatGptTabCount: number; geminiTabCount: number }> {

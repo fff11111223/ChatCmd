@@ -110,6 +110,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
       return true;
     }
+    if (message.action === 'sync-latest-turn') {
+      void syncLatestTurn(message)
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+      return true;
+    }
     if (message.action === 'reload-tabs') {
       void reloadChatTabs()
         .then((result) => sendResponse({ ok: true, ...result }))
@@ -171,6 +177,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!isChat && !isGem) return;
   void refreshConversationAliases(tabId, tabUrl);
   void syncRequestIdentityFromTab(tabId, tabUrl);
+  void syncConversationTitleFromTab(tabId, tabUrl, tab?.title || changeInfo.title);
   if (isGem) {
     void handleGeminiTabNavigation(tabId, tabUrl);
   }
@@ -365,6 +372,7 @@ async function syncLatestTurn(message) {
     assistantContent: response.assistantContent || '',
     conversationId: response.conversationId || '',
     conversationUrl: response.conversationUrl || tab.url || '',
+    conversationTitle: response.conversationTitle || '',
   };
 }
 
@@ -513,6 +521,36 @@ async function syncRequestIdentityFromTab(tabId, tabUrl) {
     } catch (error) {
       await logExtension('warn', 'background', `Could not synchronize conversation ID ${liveId} from tab ${tabId}: ${errorMessage(error)}`);
     }
+  }
+}
+
+async function syncConversationTitleFromTab(tabId, tabUrl, tabTitle) {
+  if (!tabUrl || !tabTitle) return;
+  const convId = conversationIdFromUrl(tabUrl);
+  if (!convId || isProvisionalConversationId(convId)) return;
+  let clean = tabTitle.trim();
+  clean = clean.replace(/\s*[-–—|]\s*(ChatGPT|Gemini).*$/i, '').trim();
+  if (!clean || /^(ChatGPT|Gemini|New chat|新對話|新聊天)$/i.test(clean)) return;
+  const stored = await chrome.storage.session.get(null);
+  let localBaseUrl = null;
+  for (const [, context] of Object.entries(stored)) {
+    if (context?.localBaseUrl) {
+      localBaseUrl = context.localBaseUrl;
+      break;
+    }
+  }
+  if (!localBaseUrl) {
+    const config = await chrome.storage.local.get('chatcmd_approval_bridge_config');
+    localBaseUrl = config?.chatcmd_approval_bridge_config?.localBaseUrl || 'http://127.0.0.1:3210';
+  }
+  try {
+    await postJson(localBaseUrl, '/api/local/chatgpt/capture/title', {
+      conversationId: convId,
+      conversationUrl: tabUrl,
+      title: clean,
+    });
+  } catch {
+    // best effort
   }
 }
 
