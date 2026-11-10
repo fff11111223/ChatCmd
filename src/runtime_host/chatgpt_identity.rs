@@ -66,7 +66,7 @@ impl RuntimeHost {
         })?;
 
         sqlx::query(
-            "INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,allow_execute,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,'chatgpt_web',?,1,'running',NULL,1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET project_folder=COALESCE(excluded.project_folder,tasks.project_folder),updated_at_ms=excluded.updated_at_ms",
+            "INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,allow_execute,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,'chatgpt_web',?,1,'running',NULL,1,NULL,?,?) ON CONFLICT(id) DO UPDATE SET project_folder=COALESCE(tasks.project_folder,excluded.project_folder),updated_at_ms=excluded.updated_at_ms",
         )
         .bind(&task_id)
         .bind(agent_id)

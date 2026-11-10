@@ -1,5 +1,5 @@
 import { AlertTriangle, Bot, ChevronDown, ChevronUp, ExternalLink, FolderOpen, LayoutDashboard, LoaderCircle, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, RotateCw, Search, Server, Settings, ShieldAlert, TerminalSquare, Trash2, Wrench, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEventHandler } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEventHandler } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { api } from '../api';
@@ -154,6 +154,25 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
   useEffect(() => { if (!taskId) return; const task = loadedTasks.find((item) => item.id === taskId); if (!task) return; const count = task.finalResponseCount ?? 0; setReadFinalCounts((current) => (current[taskId] ?? 0) >= count ? current : { ...current, [taskId]: count }); }, [taskId, loadedTasks]);
   useEffect(() => { setContextMenu(undefined); setProjectContextMenu(undefined); setShowMoveMenu(false); setMoveError(''); onClose(); }, [location.pathname, onClose]);
   useEffect(() => { if (!contextMenu && !projectContextMenu) return; const close = () => { setContextMenu(undefined); setProjectContextMenu(undefined); setShowMoveMenu(false); setMoveError(''); }; window.addEventListener('pointerdown', close); window.addEventListener('blur', close); return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('blur', close); }; }, [contextMenu, projectContextMenu]);
+
+  // Clamp the context menu within the viewport after it renders or when the submenu is toggled.
+  const menuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    if (rect.bottom > window.innerHeight - margin) {
+      const shift = rect.bottom - (window.innerHeight - margin);
+      el.style.top = `${Math.max(margin, rect.top - shift)}px`;
+    }
+    if (rect.right > window.innerWidth - margin) {
+      const shift = rect.right - (window.innerWidth - margin);
+      el.style.left = `${Math.max(margin, rect.left - shift)}px`;
+    }
+  }, [contextMenu, showMoveMenu]);
+
+
 
   const deleteConversation = useCallback(async () => {
     if (!deleteTarget || !canDeleteTask(deleteTarget)) return; setDeleting(true); setDeleteError('');
@@ -318,7 +337,7 @@ export function TaskRail({ open, onClose, onDesktopCollapse }: { open: boolean; 
         {error && <button className="task-rail-load-retry" type="button" onClick={() => void loadMore()}>{tr('Reload')}</button>}
       </>}
     </div></div>
-    {contextMenu && <div className="task-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+    {contextMenu && <div ref={menuRef} className="task-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
       <button type="button" role="menuitem" disabled={movingToProject} onClick={() => { setShowMoveMenu((prev) => !prev); setMoveError(''); }}><FolderOpen /><span>{tr('Move to project…')}</span></button>
       {showMoveMenu && <div className="task-context-submenu">
         {projects.map((project) => (

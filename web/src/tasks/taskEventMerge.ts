@@ -6,6 +6,10 @@ export function mergeTaskEvent(task: Task, event: TimelineEvent): Task {
   const payload = payloadObject(event);
   const status = stringValue(payload.status);
   const title = stringValue(payload.title);
+  // Preserve or update projectFolder: honour explicit project_folder_updated events, keep existing otherwise.
+  const projectFolder = event.type === 'conversation.project_folder_updated'
+    ? (payload.projectFolder !== undefined ? (payload.projectFolder as string | null | undefined) : task.projectFolder)
+    : task.projectFolder;
   const finalCompleted = event.type === 'status' && status === 'completed'
     && Boolean(stringValue(payload.content) || stringValue(payload.response) || stringValue(payload.message));
   const newUserTurn = event.type === 'message' && payload.role === 'user'
@@ -18,6 +22,7 @@ export function mergeTaskEvent(task: Task, event: TimelineEvent): Task {
     updatedAtUtc: event.occurredAt || task.updatedAtUtc,
     outputPreview: stringValue(payload.content) || stringValue(payload.message) || task.outputPreview,
     finalResponseCount: (task.finalResponseCount ?? 0) + (finalCompleted ? 1 : 0),
+    projectFolder,
   };
 }
 

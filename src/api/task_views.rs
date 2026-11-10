@@ -401,8 +401,10 @@ pub(super) async fn set_task_project_folder(
         .as_deref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
-    let affected = sqlx::query("UPDATE tasks SET project_folder=? WHERE id=?")
+    let now = now_ms();
+    let affected = sqlx::query("UPDATE tasks SET project_folder=?,updated_at_ms=? WHERE id=?")
         .bind(project_folder)
+        .bind(now)
         .bind(&id)
         .execute(state.repository.pool())
         .await
@@ -411,6 +413,15 @@ pub(super) async fn set_task_project_folder(
     if affected == 0 {
         return Err(not_found());
     }
+    // Keep all bridge requests for this task in sync so that persist_bridge_started_binding
+    // cannot restore a stale project_folder the next time the conversation is opened.
+    sqlx::query("UPDATE chatgpt_bridge_requests SET project_folder=?,updated_at_ms=? WHERE task_id=?")
+        .bind(project_folder)
+        .bind(now)
+        .bind(&id)
+        .execute(state.repository.pool())
+        .await
+        .map_err(db_problem)?;
     let mut event = AppEvent::new(
         "conversation.project_folder_updated",
         json!({ "projectFolder": project_folder }),
