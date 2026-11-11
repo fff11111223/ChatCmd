@@ -1,9 +1,22 @@
 (() => {
+  // Whether to show the overlay banner + "Back to ChatCMD" button is controlled by the
+  // "chatGptOverlay" key in localStorage('chatcmd.preferences').
+  // Default is false (hidden) — the user can re-enable it in Settings → Display.
+  function isChatGptOverlayEnabled() {
+    try {
+      const prefs = JSON.parse(localStorage.getItem('chatcmd.preferences') ?? '{}');
+      // Default off. Only show when the user has explicitly set it to true.
+      return prefs.chatGptOverlay === true;
+    } catch {
+      return false;
+    }
+  }
+
   function renderReturnToChatCmd(enabled) {
     renderChatCmdControlledState(enabled);
     const id = 'chatcmd-return-to-app';
     document.getElementById(id)?.remove();
-    if (!enabled) return;
+    if (!enabled || !isChatGptOverlayEnabled()) return;
 
     const button = document.createElement('button');
     button.id = id;
@@ -93,7 +106,7 @@
     const frameId = 'chatcmd-controlled-frame';
     document.getElementById(bannerId)?.remove();
     document.getElementById(frameId)?.remove();
-    if (!enabled) return;
+    if (!enabled || !isChatGptOverlayEnabled()) return;
 
     const banner = document.createElement('section');
     banner.id = bannerId;

@@ -34,6 +34,7 @@ export function SettingsPage() {
   const [confirming, setConfirming] = useState(false);
   const [saved, setSaved] = useState(false);
   const [fontSource, setFontSource] = useState<'google' | 'uploaded'>(() => storedFontSource());
+  const [chatGptOverlay, setChatGptOverlay] = useState<boolean>(() => storedChatGptOverlay());
   const requestedTab = searchParams.get('tab');
   const [activeTab, setActiveTab] = useState<SettingsTab>(isSettingsTab(requestedTab) ? requestedTab : 'execution');
 
@@ -63,7 +64,7 @@ export function SettingsPage() {
       const next = await api.saveSettings(value);
       result.setData(next);
       setValue(next);
-      persistPreferences({ theme: next.theme, fontFamily: next.fontFamily, taskFontScale: next.taskFontScale, language: next.language, sound: next.sound, newAgentSound: next.newAgentSound, finishedTaskSound: next.finishedTaskSound });
+      persistPreferences({ theme: next.theme, fontFamily: next.fontFamily, taskFontScale: next.taskFontScale, language: next.language, sound: next.sound, newAgentSound: next.newAgentSound, finishedTaskSound: next.finishedTaskSound, chatGptOverlay });
       void chatGptExtensionStatus();
       document.documentElement.dataset.theme = next.theme;
       if (fontSource === 'uploaded') await applyUploadedFont(next.fontFamily);
@@ -158,6 +159,9 @@ export function SettingsPage() {
               <SettingField wide label={tr('Task page font size')} hint={tr('Adjust text size only inside task conversation pages.')} detail={tr('ChatCMD scales typography together with key spacing, controls, icons, and side panels so larger or smaller text keeps the task UI balanced.')}><div className="settings-task-font-scale"><input type="range" min="90" max="130" step="5" value={value.taskFontScale} onChange={(event) => updateTaskFontScale(Number(event.target.value))} aria-label={tr('Task page font size')} /><div className="settings-font-presets">{TASK_FONT_SCALE_PRESETS.map((scale) => <button key={scale} type="button" className={`settings-font-chip ${value.taskFontScale === scale ? 'active' : ''}`} onClick={() => updateTaskFontScale(scale)}>{scale}%</button>)}</div><div className="settings-task-font-preview" style={{ '--preview-title-size': `${13 * value.taskFontScale / 100}px`, '--preview-body-size': `${11 * value.taskFontScale / 100}px` } as React.CSSProperties}><strong>{tr('Task conversation preview')}</strong><span>{tr('Messages, status, tools, sidebar, and composer resize together.')}</span></div></div></SettingField>
               <SettingField label={tr('Language')} hint={tr('Applied immediately to the current browser.')} detail={tr('Changes interface labels and descriptions. Technical output from tools, terminals, or external services may still use its original language.')}><select value={value.language} onChange={(event) => updateLanguage(event.target.value as LocalSettings['language'])}><option value="en">English</option><option value="vi">Tiếng Việt</option></select></SettingField>
             </div></div>
+            <div className="settings-section-block"><div className="settings-control-grid one-column">
+              <ToggleSetting checked={chatGptOverlay} onChange={(checked) => { setChatGptOverlay(checked); persistPreferences({ chatGptOverlay: checked }); }} label={tr('ChatGPT tab overlay')} hint={tr('Show the warning banner and "Back to ChatCMD" button on the ChatGPT tab while an Agent is running.')} detail={tr('Disable to keep the ChatGPT page unobstructed and reduce browser rendering load. The Agent continues to work normally either way.')} />
+            </div></div>
           </div>}
           {activeTab === 'sound' && <div className="sound-settings">
             <SettingsIntro icon={<Volume2 />} title={tr('Notification sounds')} description={tr('Use sounds to notice important Agent events when ChatCMD is open in the background or another browser tab.')} />
@@ -251,4 +255,14 @@ function persistPreferences(next: Record<string, unknown>) {
     // Replace malformed browser preferences with a valid object.
   }
   localStorage.setItem('chatcmd.preferences', JSON.stringify({ ...preferences, ...next }));
+}
+
+function storedChatGptOverlay(): boolean {
+  try {
+    const prefs = JSON.parse(localStorage.getItem('chatcmd.preferences') ?? '{}') as Record<string, unknown>;
+    // Default off — only on when explicitly set to true.
+    return prefs.chatGptOverlay === true;
+  } catch {
+    return false;
+  }
 }
