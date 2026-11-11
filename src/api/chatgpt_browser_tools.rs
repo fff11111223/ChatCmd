@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, extract::{Path, State}, http::StatusCode};
 use chatcmd_mcp::RuntimeApi;
 use chatcmd_runtime::OperationContext;
 use serde::Deserialize;
@@ -9,7 +9,7 @@ use sqlx::Row;
 
 use crate::websocket::AppState;
 
-use super::{Problem, db_problem};
+use super::{Problem, db_problem, now_ms};
 
 /// Blocked lifecycle tool names that must not be called through the browser
 /// tool bridge (they are managed by the bridge lifecycle handlers).
@@ -378,6 +378,231 @@ pub(super) async fn browser_tool_call(
     }
 }
 
+/// Request body for direct task tool execution (e.g. re-running a tool call).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ExecuteTaskToolInput {
+    pub call_id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: Value,
+    pub note: Option<String>,
+    pub turn_id: Option<String>,
+}
+
+pub(super) async fn execute_task_tool(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(input): Json<ExecuteTaskToolInput>,
+) -> Result<Json<Value>, Problem> {
+    let call_id = input.call_id.trim();
+    if call_id.is_empty() {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Missing call ID",
+            "callId is required and must be non-empty.",
+        ));
+    }
+    if call_id.len() > MAX_CALL_ID_BYTES {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid call ID",
+            "callId must not exceed 240 bytes.",
+        ));
+    }
+
+    let tool = input.tool.trim();
+    if tool.is_empty() {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Missing tool",
+            "tool is required.",
+        ));
+    }
+    if BLOCKED_TOOLS.contains(&tool) {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Restricted tool",
+            "This tool cannot be executed directly.",
+        ));
+    }
+
+    if !input.arguments.is_object() {
+        return Err(Problem::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid arguments",
+            "arguments must be a JSON object.",
+        ));
+    }
+
+    let task_row = sqlx::query(
+        "SELECT id, agent_id, project_folder, conversation_scope_hash FROM tasks WHERE id=? LIMIT 1",
+    )
+    .bind(&task_id)
+    .fetch_optional(state.repository.pool())
+    .await
+    .map_err(db_problem)?
+    .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND, "Task not found", "Task does not exist."))?;
+
+    let agent_id: String = task_row.get("agent_id");
+    let conversation_scope: Option<String> = task_row.get("conversation_scope_hash");
+    let project_folder_str: Option<String> = task_row.get("project_folder");
+
+    let turn_id: String = match input.turn_id.filter(|t| !t.trim().is_empty()) {
+        Some(t) => t,
+        None => {
+            sqlx::query_scalar(
+                "SELECT turn_id FROM timeline_events WHERE task_id=? AND turn_id IS NOT NULL ORDER BY created_at_ms DESC, event_id DESC LIMIT 1",
+            )
+            .bind(&task_id)
+            .fetch_optional(state.repository.pool())
+            .await
+            .map_err(db_problem)?
+            .unwrap_or_else(|| format!("turn-{}", now_ms()))
+        }
+    };
+
+    let has_user_message: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM timeline_events WHERE task_id=? AND turn_id=? AND actor='user' AND kind='message' LIMIT 1)",
+    )
+    .bind(&task_id)
+    .bind(&turn_id)
+    .fetch_one(state.repository.pool())
+    .await
+    .unwrap_or(false);
+
+    if !has_user_message {
+        let event_id = format!("user-rerun-{}", now_ms());
+        let payload = json!({"role":"user","content":"(tool execution)","submittedContent":"","provider":"chatgpt_web"});
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO timeline_events(event_id,task_id,turn_id,session_id,actor,kind,idempotency_key,payload_json,metadata_json,created_at_ms) VALUES(?,?,?,NULL,'user','message',?,?,NULL,?)",
+        )
+        .bind(&event_id)
+        .bind(&task_id)
+        .bind(&turn_id)
+        .bind(&event_id)
+        .bind(payload.to_string())
+        .bind(now_ms())
+        .execute(state.repository.pool())
+        .await;
+    }
+
+    let _ = sqlx::query(
+        "DELETE FROM timeline_events WHERE task_id = ? AND json_extract(payload_json, '$.activityId') = ?",
+    )
+    .bind(&task_id)
+    .bind(call_id)
+    .execute(state.repository.pool())
+    .await;
+
+    let _ = sqlx::query("DELETE FROM approvals WHERE id = ? AND task_id = ?")
+        .bind(call_id)
+        .bind(&task_id)
+        .execute(state.repository.pool())
+        .await;
+
+    let project_folder = project_folder_str.as_deref().map(std::path::Path::new);
+    let resident_footer = match state
+        .skills
+        .active_resident_instructions_for_task(Some(&task_id), project_folder)
+        .await
+    {
+        Ok((instructions, _warnings)) => {
+            let trimmed = instructions.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => None,
+    };
+
+    let conversation_scope_id = match sqlx::query_scalar::<_, String>(
+        "SELECT conversation_id FROM chatgpt_conversations WHERE task_id = ? LIMIT 1",
+    )
+    .bind(&task_id)
+    .fetch_optional(state.repository.pool())
+    .await
+    .ok()
+    .flatten()
+    {
+        Some(cid) if !cid.trim().is_empty() => Some(format!("openai:{cid}")),
+        _ => conversation_scope,
+    };
+
+    let mut context = OperationContext::new(call_id.to_owned(), agent_id, tool.to_owned());
+    context.task_id = Some(task_id.clone());
+    context.turn_id = Some(turn_id.clone());
+    context.conversation_scope_id = conversation_scope_id;
+
+    // Auto-approve if policy is Approval mode since user explicitly triggered execution from UI
+    let state_clone = state.clone();
+    let task_id_clone = task_id.clone();
+    let call_id_clone = call_id.to_string();
+    let auto_approver = tokio::spawn(async move {
+        for _ in 0..60 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let affected = sqlx::query(
+                "UPDATE approvals SET state='approved', decision_json='{\"decision\":\"allow\"}', resolved_at_ms=? WHERE id=? AND task_id=? AND state='pending'",
+            )
+            .bind(now_ms())
+            .bind(&call_id_clone)
+            .bind(&task_id_clone)
+            .execute(state_clone.repository.pool())
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0);
+            if affected > 0 {
+                break;
+            }
+        }
+    });
+
+    let result = state.runtime.call(tool, context, input.arguments).await;
+    auto_approver.abort();
+
+    if let Some(ref note) = input
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        let _ = sqlx::query(
+            "UPDATE timeline_events SET payload_json = json_set(payload_json, '$.note', ?) WHERE task_id = ? AND json_extract(payload_json, '$.activityId') = ?",
+        )
+        .bind(note)
+        .bind(&task_id)
+        .bind(call_id)
+        .execute(state.repository.pool())
+        .await;
+    }
+
+    match result {
+        Ok(value) => Ok(Json(json!({
+            "ok": true,
+            "callId": call_id,
+            "taskId": task_id,
+            "turnId": turn_id,
+            "tool": tool,
+            "result": guard_command_run_result_for_ai(tool, value),
+            "residentFooter": resident_footer,
+        }))),
+        Err(error) => Ok(Json(json!({
+            "ok": false,
+            "callId": call_id,
+            "taskId": task_id,
+            "turnId": turn_id,
+            "tool": tool,
+            "error": {
+                "code": error.code,
+                "message": error.message,
+            },
+            "residentFooter": resident_footer,
+        }))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +946,64 @@ Core instructions
         assert_eq!(res_denied.0.get("ok").and_then(Value::as_bool), Some(false));
         let error_code = res_denied.0.pointer("/error/code").and_then(Value::as_str);
         assert_eq!(error_code, Some("policy_denied"));
+    }
+
+    #[tokio::test]
+    async fn execute_task_tool_runs_tool_and_records_activity() {
+        let (host, agent_id, directory) =
+            crate::runtime_host::user_message_tests::test_host().await;
+        let state = Arc::new(
+            host.test_app_state(directory.path().join("chatcmd.db").display().to_string()),
+        );
+        let task_id = "task-execute-test";
+        let now = super::super::now_ms();
+        sqlx::query(
+            "INSERT INTO tasks(id,agent_id,device_id,conversation_scope_hash,title,source,project_folder,allow_execute,status,active_session_id,generation,stopped_at_ms,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,1,'running',NULL,1,NULL,?,?)",
+        )
+        .bind(task_id)
+        .bind(&agent_id)
+        .bind(state.device.id.as_str())
+        .bind("openai:conv-1")
+        .bind("Test Title")
+        .bind("chatgpt_web")
+        .bind(directory.path().display().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(state.repository.pool())
+        .await
+        .expect("insert test task");
+
+        let test_file = directory.path().join("test.txt");
+        std::fs::write(&test_file, "hello world").expect("write test file");
+
+        let input = ExecuteTaskToolInput {
+            call_id: "call_rerun_001".to_string(),
+            tool: "fs_read_text".to_string(),
+            note: Some("re-running file read".to_string()),
+            arguments: json!({ "path": test_file.display().to_string() }),
+            turn_id: Some("turn-1".to_string()),
+        };
+
+        let res = execute_task_tool(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(task_id.to_string()),
+            Json(input),
+        )
+        .await
+        .expect("execute_task_tool call");
+
+        assert_eq!(res.0.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(res.0.get("callId").and_then(Value::as_str), Some("call_rerun_001"));
+        assert_eq!(res.0.get("tool").and_then(Value::as_str), Some("fs_read_text"));
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(1) FROM timeline_events WHERE task_id = ? AND json_extract(payload_json, '$.activityId') = ?",
+        )
+        .bind(task_id)
+        .bind("call_rerun_001")
+        .fetch_one(state.repository.pool())
+        .await
+        .expect("count timeline events");
+        assert!(count >= 1, "expected at least 1 event recorded for activity");
     }
 }

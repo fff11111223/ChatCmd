@@ -219,6 +219,7 @@ fn extension_route_allowed(method: &Method, path: &str) -> bool {
             matches!(*action, "approve-execution" | "reject-execution")
         }
         (&Method::POST, ["api", "local", "tasks", _, "activities", _, "approval"])
+        | (&Method::POST, ["api", "local", "tasks", _, "tools", "execute"])
         | (&Method::POST, ["api", "local", "plan", "questions", _, "answer"]) => true,
         _ => false,
     }

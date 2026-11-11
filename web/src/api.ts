@@ -128,6 +128,7 @@ export const api = {
   deleteTask: (id: string) => request<void>(`/api/local/tasks/${item(id)}`, { method: 'DELETE' }),
   taskAction: (id: string, action: string, body?: unknown) => request<TaskDetail>(`/api/local/tasks/${item(id)}/${action}`, { method: 'POST', body: body === undefined ? undefined : json(body) }),
   stopTask: (id: string) => request<TaskDetail>(`/api/local/tasks/${item(id)}/stop`, { method: 'POST', body: '{}' }),
+  executeTaskTool: (taskId: string, input: { callId: string; tool: string; arguments?: Record<string, unknown>; note?: string; turnId?: string }) => request<{ ok: boolean; callId: string; taskId: string; turnId: string; tool: string; result?: unknown; error?: { code: string; message: string }; residentFooter?: string }>(`/api/local/tasks/${item(taskId)}/tools/execute`, { method: 'POST', body: json(input) }),
   taskExecutionMode: (id: string, signal?: AbortSignal) => request<{ mode: CommandExecutionMode; overridden: boolean }>(`/api/local/tasks/${item(id)}/command-execution-mode`, { signal }),
   setTaskExecutionMode: (id: string, mode: CommandExecutionMode) => request<{ mode: CommandExecutionMode; overridden: boolean }>(`/api/local/tasks/${item(id)}/command-execution-mode`, { method: 'PUT', body: json({ mode }) }),
   stopTaskActivity: (taskId: string, activityId: string, input: { turnId?: string; reason?: string }) => request<void>(`/api/local/tasks/${item(taskId)}/activities/${item(activityId)}/stop`, { method: 'POST', body: json(input) }),

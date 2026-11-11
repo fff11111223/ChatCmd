@@ -160,6 +160,10 @@ pub(crate) fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/tasks/{task_id}/activities/{activity_id}/stop",
             post(stop_task_activity),
         )
+        .route(
+            "/tasks/{task_id}/tools/execute",
+            post(execute_task_tool),
+        )
         .route("/tasks/{id}/{action}", post(task_action))
         .route("/sessions", get(sessions))
         .route("/sessions/terminals/live", get(live_terminals))

@@ -2,7 +2,7 @@ import { subagentLabel, subagentTreeRows } from './subagentPresentation';
 import { TurnThinkingSources } from './TurnThinkingSources';
 import { browserThinking, isBrowserEvent, type BrowserThinking, type BrowserThought } from './chatGptThinking';
 import { BookOpen, Bot, CheckCircle2, ChevronDown, CircleAlert, CircleStop, Clock3, ExternalLink, FileCode2, FilePenLine, GitBranch, LoaderCircle, MessageSquareText, RotateCw, Send, Search, TerminalSquare, Wrench } from 'lucide-react';
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatRichText } from './rich-text/ChatRichText';
 import { api } from '../api';
 import { dispatchChatGptRequest } from '../chatgptBridge';
@@ -157,7 +157,7 @@ export function TaskTurnBubble({ turn, taskId, subagents = [], agentLabel = 'Cod
     </article>
     {stopTarget && taskId && <StopActivityDialog taskId={taskId} activity={stopTarget} onClose={() => setStopTarget(null)} />}
     {changeTarget && <ActivityDiffModal activity={changeTarget} close={() => setChangeTarget(null)} />}
-    {resendTarget && <ResendToolResultModal activity={resendTarget.activity} rawCallJson={resendTarget.rawJson} taskId={taskId} close={() => setResendTarget(null)} />}
+    {resendTarget && <ResendToolResultModal activity={resendTarget.activity} rawCallJson={resendTarget.rawJson} taskId={taskId} turnId={turn.id} close={() => setResendTarget(null)} />}
   </div></ToolCallActionContext.Provider>;
 }
 
@@ -333,7 +333,7 @@ function TurnProcess({ blocks, taskId, onStop, browser, onRunToolCall }: { block
     if (!nearBottomRef.current) return;
     const root = scrollRef.current;
     if (!root) return;
-    const frame = window.requestAnimationFrame(() => root.scrollTo({ top: root.scrollHeight, behavior: 'auto' }));
+    const frame = window.requestAnimationFrame(() => root.scrollTo?.({ top: root.scrollHeight, behavior: 'auto' }));
     return () => window.cancelAnimationFrame(frame);
   }, [updateKey]);
   const updateScrollPosition = () => { const root = scrollRef.current; if (root) nearBottomRef.current = root.scrollHeight - root.scrollTop - root.clientHeight < 48; };
@@ -359,7 +359,7 @@ function ActivityBatch({ activities, taskId, onStop, browser }: { activities: To
     if (!nearBottomRef.current) return;
     const root = scrollRef.current;
     if (!root) return;
-    const frame = window.requestAnimationFrame(() => root.scrollTo({ top: root.scrollHeight, behavior: 'auto' }));
+    const frame = window.requestAnimationFrame(() => root.scrollTo?.({ top: root.scrollHeight, behavior: 'auto' }));
     return () => window.cancelAnimationFrame(frame);
   }, [updateKey]);
   const updateScrollPosition = () => {
@@ -460,7 +460,7 @@ function ActivityRow({ activity, taskId, onStop, browser }: { activity: ToolActi
           ? <div className="activity-popup-content"><div className="activity-error-detail" role="alert"><div className="activity-error-heading"><CircleAlert aria-hidden="true" /><strong>{tr('Could not load tool details.')}</strong></div><div className="activity-error-message">{detailError}</div><button className="button secondary compact" type="button" onClick={loadDetail}>{tr('Reload')}</button></div></div>
           : <ActivityPopupContent activity={resolvedActivity} approvalPending={approvalPending} running={running} taskId={targetTaskId} browser={browser} onResend={() => { closePopup(); setResendOpen(true); }} />}
     </Modal>}
-    {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={targetTaskId} close={() => setResendOpen(false)} />}
+    {resendOpen && <ResendToolResultModal activity={resolvedActivity} taskId={targetTaskId} turnId={activity.turnId} close={() => setResendOpen(false)} />}
   </div>;
 }
 
@@ -523,7 +523,7 @@ function ActivityPopupContent({ activity, approvalPending, running, browser, onR
   </div>;
 }
 
-function ResendToolResultModal({ activity, rawCallJson, taskId, close }: { activity: ToolActivity; rawCallJson?: string; taskId: string; close: () => void }) {
+function ResendToolResultModal({ activity, rawCallJson, taskId, turnId, close }: { activity: ToolActivity; rawCallJson?: string; taskId: string; turnId?: string; close: () => void }) {
   const initialOutput = (() => {
     if (typeof activity.output === 'string') return activity.output;
     if (activity.output !== undefined && activity.output !== null) {
@@ -531,35 +531,128 @@ function ResendToolResultModal({ activity, rawCallJson, taskId, close }: { activ
     }
     return activity.errorMessage || activity.error || '';
   })();
-  const [sendMode, setSendMode] = useState<'result' | 'call'>('result');
-  const [callJson, setCallJson] = useState(rawCallJson || '');
+  const fallbackCallJson = useMemo(() => {
+    return JSON.stringify({
+      id: activity.id || 'call_manual',
+      tool: activity.tool || 'tool',
+      arguments: activity.input && typeof activity.input === 'object' ? activity.input : {},
+      ...(activity.note ? { note: activity.note } : {}),
+    }, null, 2);
+  }, [activity]);
+
+  const [sendMode, setSendMode] = useState<'result' | 'call'>(rawCallJson ? 'call' : 'result');
+  const [callJson, setCallJson] = useState(rawCallJson || fallbackCallJson);
   const [output, setOutput] = useState(initialOutput);
   const [isOk, setIsOk] = useState(activity.status !== 'failed');
   const [sending, setSending] = useState(false);
+  const [sendStep, setSendStep] = useState<'idle' | 'executing' | 'sending'>('idle');
+  const [runningLocally, setRunningLocally] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSend = async () => {
-    if (sending) return;
-    setSending(true);
+  const parseCallInput = () => {
+    let parsed: { id?: string; tool?: string; arguments?: Record<string, unknown>; note?: string };
+    try {
+      parsed = JSON.parse(callJson);
+    } catch {
+      throw new Error(tr('Invalid Tool Call JSON syntax. Please check formatting.'));
+    }
+    const callId = String(parsed.id || activity.id || 'call_manual').trim();
+    const toolName = String(parsed.tool || activity.tool || 'tool').trim();
+    const args = parsed.arguments && typeof parsed.arguments === 'object' ? parsed.arguments : {};
+    const note = parsed.note ? String(parsed.note) : activity.note;
+    return { callId, toolName, args, note };
+  };
+
+  const handleRunLocallyOnly = async () => {
+    if (sending || runningLocally) return;
+    setRunningLocally(true);
     setError('');
     try {
-      const callId = activity.id || 'call_manual';
-      const toolName = activity.tool || 'tool';
-      let payloadContent = output;
+      const { callId, toolName, args, note } = parseCallInput();
+      const execRes = await api.executeTaskTool(taskId, {
+        callId,
+        tool: toolName,
+        arguments: args,
+        note: note || undefined,
+        turnId,
+      });
+
+      setIsOk(execRes.ok);
+      const resVal = execRes.ok ? execRes.result : (execRes.error?.message || execRes.error || tr('Tool execution failed.'));
+      setOutput(typeof resVal === 'string' ? resVal : JSON.stringify(resVal, null, 2));
+      setSendMode('result');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : tr('Failed to execute tool.'));
+    } finally {
+      setRunningLocally(false);
+    }
+  };
+
+  const handleSend = async () => {
+    if (sending || runningLocally) return;
+    setSending(true);
+    setSendStep('idle');
+    setError('');
+    try {
+      let callId = activity.id || 'call_manual';
+      let toolName = activity.tool || 'tool';
+      let payloadContent: unknown = output;
       let forceError = false;
-      if (isOk) {
-        const str = typeof output === 'string' ? output : JSON.stringify(output);
-        if (str.length > 12000) {
-          payloadContent = tr('[Message too long] Tool output is too long ({count} chars) to send through browser. Please narrow down the query scope or read in pages.', { count: str.length });
+      let residentFooter: string | undefined;
+
+      if (sendMode === 'call') {
+        const { callId: cId, toolName: tName, args, note } = parseCallInput();
+        callId = cId;
+        toolName = tName;
+
+        setSendStep('executing');
+        const execRes = await api.executeTaskTool(taskId, {
+          callId,
+          tool: toolName,
+          arguments: args,
+          note: note || undefined,
+          turnId,
+        });
+
+        residentFooter = execRes.residentFooter;
+        if (execRes.ok) {
+          payloadContent = execRes.result;
+          const str = typeof payloadContent === 'string' ? payloadContent : JSON.stringify(payloadContent);
+          if (str.length > 12000) {
+            payloadContent = tr('[Message too long] Tool output is too long ({count} chars) to send through browser. Please narrow down the query scope or read in pages.', { count: str.length });
+            forceError = true;
+          }
+        } else {
+          payloadContent = execRes.error?.message || execRes.error || tr('Tool execution failed.');
           forceError = true;
         }
+      } else {
+        if (isOk) {
+          const str = typeof output === 'string' ? output : JSON.stringify(output);
+          if (str.length > 12000) {
+            payloadContent = tr('[Message too long] Tool output is too long ({count} chars) to send through browser. Please narrow down the query scope or read in pages.', { count: str.length });
+            forceError = true;
+          }
+        }
       }
-      const resultBlock = sendMode === 'call'
-        ? `\`\`\`chatcmd_tool_call\n${callJson}\n\`\`\``
-        : isOk && !forceError
-          ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(payloadContent)}}\n\`\`\``
-          : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(payloadContent)}}\n\`\`\``;
 
+      const isSuccess = sendMode === 'call' ? !forceError : (isOk && !forceError);
+      let resultBlock = isSuccess
+        ? `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":true,"content":${JSON.stringify(payloadContent)}}\n\`\`\``
+        : `\`\`\`chatcmd_tool_result\n{"id":"${callId}","tool":"${toolName}","ok":false,"error":${JSON.stringify(payloadContent)}}\n\`\`\``;
+
+      const footerLines: string[] = [];
+      if (residentFooter) footerLines.push(residentFooter);
+      const dm = callId.match(/^call_(\d+)$/);
+      if (dm) {
+        const n = parseInt(dm[1], 10);
+        footerLines.push(`next_id: call_${String(n + 1).padStart(dm[1].length, '0')}`);
+      }
+      if (footerLines.length > 0) {
+        resultBlock += `\n\n[ChatCMD 提醒]\n${footerLines.join('\n')}`;
+      }
+
+      setSendStep('sending');
       const bridge = await api.chatGptBridge(taskId);
       const conversationUrl = bridge.conversationUrl || undefined;
       const provider = conversationUrl?.startsWith('https://gemini.google.com/') ? 'gemini' : 'chatgpt';
@@ -575,29 +668,28 @@ function ResendToolResultModal({ activity, rawCallJson, taskId, close }: { activ
 
       close();
     } catch (err) {
-      setError(err instanceof Error ? err.message : tr('Failed to send tool result.'));
+      setError(err instanceof Error ? err.message : tr('Failed to execute or send tool result.'));
     } finally {
       setSending(false);
+      setSendStep('idle');
     }
   };
 
-  return <Modal title={sendMode === 'call' ? tr('Confirm & Resend Tool Call') : tr('Confirm & Resend Tool Result')} description={`${activity.tool} (${activity.id})`} close={close} className="resend-tool-modal">
+  return <Modal title={sendMode === 'call' ? tr('Confirm & Re-run Tool Call') : tr('Confirm & Resend Tool Result')} description={`${activity.tool} (${activity.id})`} close={close} className="resend-tool-modal">
     <div className="activity-popup-content" style={{ display: 'grid', gap: '14px', padding: '0 18px 18px' }}>
-      {rawCallJson && (
-        <div>
-          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>{tr('Mode')}</label>
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
-              <input type="radio" name="resendMode" checked={sendMode === 'result'} onChange={() => setSendMode('result')} />
-              <span>{tr('Resend tool result')} (chatcmd_tool_result)</span>
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
-              <input type="radio" name="resendMode" checked={sendMode === 'call'} onChange={() => setSendMode('call')} />
-              <span>{tr('Re-run tool call')} (chatcmd_tool_call)</span>
-            </label>
-          </div>
+      <div>
+        <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>{tr('Mode')}</label>
+        <div style={{ display: 'flex', gap: '16px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+            <input type="radio" name="resendMode" checked={sendMode === 'result'} onChange={() => setSendMode('result')} />
+            <span>{tr('Resend tool result')} (chatcmd_tool_result)</span>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+            <input type="radio" name="resendMode" checked={sendMode === 'call'} onChange={() => setSendMode('call')} />
+            <span>{tr('Re-run tool call')} (chatcmd_tool_call)</span>
+          </label>
         </div>
-      )}
+      </div>
       {sendMode === 'call' ? (
         <div>
           <label htmlFor="resend-call-textarea" style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--muted)', marginBottom: '6px' }}>
@@ -668,12 +760,28 @@ function ResendToolResultModal({ activity, rawCallJson, taskId, close }: { activ
         <div className="activity-error-message">{error}</div>
       </div>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
-        <button type="button" className="button secondary" onClick={close} disabled={sending}>
+        <button type="button" className="button secondary" onClick={close} disabled={sending || runningLocally}>
           {tr('Cancel')}
         </button>
-        <button type="button" className="button primary" onClick={handleSend} disabled={sending}>
+        {sendMode === 'call' && (
+          <button type="button" className="button secondary" onClick={handleRunLocallyOnly} disabled={sending || runningLocally}>
+            {runningLocally ? <LoaderCircle className="spin" style={{ width: '14px', height: '14px' }} /> : <RotateCw style={{ width: '14px', height: '14px' }} />}
+            <span>{runningLocally ? tr('Executing…') : tr('Run locally only')}</span>
+          </button>
+        )}
+        <button type="button" className="button primary" onClick={handleSend} disabled={sending || runningLocally}>
           {sending ? <LoaderCircle className="spin" style={{ width: '14px', height: '14px' }} /> : <Send style={{ width: '14px', height: '14px' }} />}
-          <span>{sending ? tr('Sending…') : tr('Send to ChatGPT')}</span>
+          <span>
+            {sendStep === 'executing'
+              ? tr('Executing tool…')
+              : sendStep === 'sending'
+                ? tr('Sending to ChatGPT…')
+                : sending
+                  ? tr('Sending…')
+                  : sendMode === 'call'
+                    ? tr('Re-run & Send to ChatGPT')
+                    : tr('Send to ChatGPT')}
+          </span>
         </button>
       </div>
     </div>
