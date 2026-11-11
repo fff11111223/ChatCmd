@@ -492,28 +492,32 @@ pub(super) async fn maybe_update_task_title(
         .await
         .map_err(db_problem)?;
 
+    let clean = if title.chars().count() > 160 {
+        title.chars().take(160).collect::<String>()
+    } else {
+        title.to_string()
+    };
+
     let should_update = match current_title.as_deref().map(str::trim) {
         None | Some("") => true,
-        Some(curr) => curr != title,
+        Some(curr) => curr != clean.as_str(),
     };
 
     if should_update {
-        let clean = if title.chars().count() > 160 {
-            title.chars().take(160).collect::<String>()
-        } else {
-            title.to_string()
-        };
         sqlx::query("UPDATE tasks SET title=? WHERE id=?")
             .bind(&clean)
             .bind(task_id)
             .execute(state.repository.pool())
             .await
             .map_err(db_problem)?;
-
-        let mut event = AppEvent::new("conversation.title_updated", json!({ "title": clean }));
-        event.task_id = Some(task_id.to_string());
-        state.publish(event);
     }
+
+    // Always broadcast so the frontend can sync its in-memory title even when
+    // the DB already holds the correct value (e.g. updated by a background tab
+    // watcher before the UI loaded the stale task list).
+    let mut event = AppEvent::new("conversation.title_updated", json!({ "title": clean }));
+    event.task_id = Some(task_id.to_string());
+    state.publish(event);
     Ok(())
 }
 

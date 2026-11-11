@@ -241,6 +241,7 @@ export function ChatGptTaskComposer({ taskId }: { taskId: string }) {
             ? tr('Synced latest response from browser ({count} chars).', { count: res.assistantContent.length.toLocaleString() })
             : tr('Synced conversation title from browser.'),
         });
+        window.dispatchEvent(new CustomEvent('chatcmd:refresh-conversations'));
       } else {
         setSyncFeedback({
           ok: false,

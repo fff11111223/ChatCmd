@@ -8,7 +8,8 @@ const LOG_KEY = 'chatcmd-extension-logs';
 const MAX_LOGS = 200;
 const CHATGPT_HOME = 'https://chatgpt.com/';
 
-importScripts('background-gemini.js', 'background-io.js', 'background-tabs.js', 'approval-bridge.js', 'background-recovery.js', 'background-capture.js', 'background-clock.js', 'background-subagent-heartbeat.js', 'compact-protocol.js', 'background-compact-destination.js', 'background-compact.js');
+importScripts('background-io.js', 'background-tabs.js', 'approval-bridge.js', 'background-recovery.js', 'background-capture.js', 'background-clock.js', 'background-subagent-heartbeat.js', 'compact-protocol.js', 'background-compact-destination.js', 'background-compact.js');
+importScripts('background-gemini.js');
 setTimeout(() => void recoverContentScriptsOnStartup(), 200);
 void reconcileOpenChatGptIdentities();
 void reconcileOpenGeminiIdentities();
@@ -541,7 +542,7 @@ async function syncConversationTitleFromTab(tabId, tabUrl, tabTitle) {
   }
   if (!localBaseUrl) {
     const config = await chrome.storage.local.get('chatcmd_approval_bridge_config');
-    localBaseUrl = config?.chatcmd_approval_bridge_config?.localBaseUrl || 'http://127.0.0.1:3210';
+    localBaseUrl = config?.chatcmd_approval_bridge_config?.localBaseUrl || approvalBaseUrl || 'http://127.0.0.1:8080';
   }
   try {
     await postJson(localBaseUrl, '/api/local/chatgpt/capture/title', {

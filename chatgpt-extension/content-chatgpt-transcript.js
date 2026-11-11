@@ -120,27 +120,36 @@
     const docTitle = cleanBrowserTitle(document.title);
     if (!isGenericTitle(docTitle)) return docTitle;
     try {
+      const convId = conversationId();
+      if (convId) {
+        const link = document.querySelector(`nav a[href*="${convId}"], aside a[href*="${convId}"], a[href*="${convId}"]`);
+        if (link) {
+          const direct = cleanBrowserTitle(link.getAttribute('title') || link.getAttribute('aria-label') || '');
+          if (!isGenericTitle(direct) && direct.length < 120) return direct;
+          const truncate = link.querySelector('.truncate, [class*="truncate" i], [class*="title" i]');
+          if (truncate) {
+            const tText = cleanBrowserTitle(truncate.textContent);
+            if (!isGenericTitle(tText) && tText.length < 120) return tText;
+          }
+          const clone = link.cloneNode(true);
+          for (const extra of clone.querySelectorAll('button, svg')) extra.remove();
+          const text = cleanBrowserTitle(clone.textContent);
+          if (!isGenericTitle(text) && text.length < 120) return text;
+        }
+      }
+    } catch { /* fallback */ }
+    try {
       const topButtons = document.querySelectorAll(
         'header button, [data-testid*="title"], [data-testid*="header"] button, ' +
         'div[class*="sticky"] button, main > div:first-child button, button[aria-haspopup="menu"]'
       );
       for (const btn of topButtons) {
+        const direct = cleanBrowserTitle(btn.getAttribute('title') || btn.getAttribute('aria-label') || '');
+        if (!isGenericTitle(direct) && direct.length < 120) return direct;
         const clone = btn.cloneNode(true);
-        for (const extra of clone.querySelectorAll('button, svg, [aria-hidden="true"], [class*="sr-only"]')) extra.remove();
+        for (const extra of clone.querySelectorAll('button, svg, [class*="sr-only"]')) extra.remove();
         const text = cleanBrowserTitle(clone.textContent);
         if (!isGenericTitle(text) && text.length < 120) return text;
-      }
-    } catch { /* fallback */ }
-    try {
-      const convId = conversationId();
-      if (convId) {
-        const links = document.querySelectorAll(`a[href*="${convId}"]`);
-        for (const link of links) {
-          const clone = link.cloneNode(true);
-          for (const extra of clone.querySelectorAll('button, svg, [aria-hidden="true"]')) extra.remove();
-          const text = cleanBrowserTitle(clone.textContent);
-          if (!isGenericTitle(text)) return text;
-        }
       }
     } catch { /* fallback */ }
     try {
@@ -149,8 +158,10 @@
         'nav a[class*="active"], aside a[class*="active"]'
       );
       for (const link of activeLinks) {
+        const direct = cleanBrowserTitle(link.getAttribute('title') || link.getAttribute('aria-label') || '');
+        if (!isGenericTitle(direct) && direct.length < 120) return direct;
         const clone = link.cloneNode(true);
-        for (const extra of clone.querySelectorAll('button, svg, [aria-hidden="true"]')) extra.remove();
+        for (const extra of clone.querySelectorAll('button, svg')) extra.remove();
         const text = cleanBrowserTitle(clone.textContent);
         if (!isGenericTitle(text)) return text;
       }

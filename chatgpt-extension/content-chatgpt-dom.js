@@ -170,7 +170,7 @@
   }
 
   function findStopButton() {
-    const composers = [...document.querySelectorAll('form[data-type="unified-composer"], [data-testid*="composer" i], form')].filter(isVisible);
+    const composers = [...document.querySelectorAll('form[data-type="unified-composer"]')].filter(isVisible);
     const root = composers.at(-1) || document;
     const selectors = [
       'button[data-testid="stop-button"]',
@@ -182,20 +182,14 @@
       'button[aria-label*="停止" i]',
       'button[title*="停止" i]',
     ];
-    let direct = findVisibleWithin(root, selectors);
-    if (!direct && root !== document) direct = findVisibleWithin(document, selectors);
+    const direct = findVisibleWithin(root, selectors);
     if (direct) return direct;
     const isStopLabel = (button) => {
       const label = normalize(button.getAttribute('aria-label') || button.title || button.textContent);
       return /^(stop|dừng|ngừng|停止)(?:\s|$)/i.test(label)
         || label.includes('停止產生') || label.includes('停止生成') || label.includes('停止回應') || label.includes('停止回答');
     };
-    const fromRoot = [...root.querySelectorAll('button')].filter(isVisible).find(isStopLabel);
-    if (fromRoot) return fromRoot;
-    if (root !== document) {
-      return [...document.querySelectorAll('button')].filter(isVisible).find(isStopLabel) || null;
-    }
-    return null;
+    return [...root.querySelectorAll('button')].filter(isVisible).find(isStopLabel) || null;
   }
 
   function clickStopButton() {
@@ -207,19 +201,28 @@
     const selectors = [
       'button[data-testid="send-button"]',
       'button[data-testid="composer-submit-button"]',
+      '[data-testid="send-button"]',
+      'button[data-testid*="send" i]',
+      'button[aria-label*="send" i]',
       'button[aria-label="Send prompt"]',
       'button[aria-label="Send message"]',
       'button[aria-label="Send"]',
-      'button[aria-label*="傳送"],button[aria-label*="送出"],button[aria-label*="發送"]',
-      'button[title*="傳送"],button[title*="送出"],button[title*="發送"]',
+      'button[aria-label*="傳送" i],button[aria-label*="送出" i],button[aria-label*="發送" i]',
+      'button[title*="傳送" i],button[title*="送出" i],button[title*="發送" i]',
+      'button[aria-label*="gửi" i]',
+      'button[type="submit"]',
     ];
-    const scope = composer?.closest('form,[data-type="unified-composer"],[data-testid*="composer" i]') || document;
-    const exact = findVisibleWithin(scope, selectors);
+    let scope = composer?.closest('form,[data-type="unified-composer"],[data-testid*="composer" i]') || document;
+    if (scope === composer && composer.parentElement) {
+      scope = composer.parentElement.closest('form,[data-type="unified-composer"],[data-testid*="composer" i]') || document;
+    }
+    if (scope === composer) scope = document;
+    let exact = findVisibleWithin(scope, selectors);
+    if (!exact && scope !== document) exact = findVisibleWithin(document, selectors);
     if (exact) return exact;
-    const submit = [...scope.querySelectorAll('button[type="submit"]')].find(isVisible);
+    let submit = [...scope.querySelectorAll('button[type="submit"]')].find(isVisible);
+    if (!submit && scope !== document) submit = [...document.querySelectorAll('button[type="submit"]')].find(isVisible);
     if (submit) return submit;
-    // Fail closed: an unlabeled control after the composer may be the add-tools (+)
-    // button. Never guess which control submits the message based on DOM order.
     return null;
   }
 
