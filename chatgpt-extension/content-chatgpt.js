@@ -417,7 +417,7 @@ function pasteFilesIntoComposer(composer, files) {
 
 async function submitPrompt(composer) {
   await delay(100);
-  const button = await waitFor(() => findSendButton(composer), 5_000, 'ChatGPT send button was not found.');
+  let button = await waitFor(() => findSendButton(composer), 5_000, 'ChatGPT send button was not found.');
   if (button.disabled || button.getAttribute('aria-disabled') === 'true') {
     if (isSendBlockedByTooLong?.(composer) || findTooLongSubmissionError?.()) {
       const error = new Error('TOO_LONG_SUBMISSION');
@@ -428,7 +428,12 @@ async function submitPrompt(composer) {
     try {
       result = await waitFor(() => {
         if (isSendBlockedByTooLong?.(composer) || findTooLongSubmissionError?.()) return 'TOO_LONG';
-        return (!button.disabled && button.getAttribute('aria-disabled') !== 'true') ? button : null;
+        // Re-query the button on every tick: React may replace the DOM element
+        // between the initial findSendButton call and the moment it becomes enabled,
+        // so a stale reference would stay "disabled" even when the real button is ready.
+        const fresh = findSendButton(composer) || button;
+        if (!fresh.disabled && fresh.getAttribute('aria-disabled') !== 'true') { button = fresh; return fresh; }
+        return null;
       }, 10_000, 'The ChatGPT send button is disabled or the attachment has not finished loading.');
     } catch (e) {
       const compText = (composer.value !== undefined ? composer.value : (composer.innerText || composer.textContent || '')).trim();
